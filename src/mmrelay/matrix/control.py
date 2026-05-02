@@ -12,7 +12,7 @@ Commands:
 help - Show this help
 ping - Check that the bridge responds
 health - Show mesh health summary
-nodes - List known Meshtastic nodes
+nodes [limit|all] - List known Meshtastic nodes
 map - Render a map of nodes with positions
 weather - Current weather for the mesh area
 hourly - Hourly weather forecast

@@ -336,6 +336,7 @@ from mmrelay.matrix.room_mapping import (
 )
 from mmrelay.matrix.portals import (
     discover_channels,
+    ensure_bot_avatar,
     ensure_channel_rooms,
     ensure_control_room,
     ensure_dm_room,

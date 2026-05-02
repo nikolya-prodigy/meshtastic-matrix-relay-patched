@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import io
+import mimetypes
 import re
+import urllib.request
 from typing import Any
 
 from nio import RoomVisibility
@@ -12,6 +16,10 @@ import mmrelay.matrix_utils as facade
 DEFAULT_PORTAL_ALIAS_PREFIX = "meshtastic"
 DEFAULT_SPACE_NAME = "Meshtastic"
 MAX_MESHTASTIC_CHANNELS = 8
+_ICON_MXC_URI: str | None = None
+_ICON_UPLOAD_ATTEMPTED = False
+_BOT_AVATAR_UPDATED = False
+_ROOM_AVATAR_UPDATED: set[str] = set()
 
 
 def portals_enabled(config: dict[str, Any] | None) -> bool:
@@ -76,6 +84,119 @@ def _control_users() -> list[str]:
     if isinstance(users, list):
         return [user for user in users if isinstance(user, str) and user.startswith("@")]
     return _invite_users()
+
+
+def _icon_config() -> dict[str, Any]:
+    cfg = _portal_config(facade.config)
+    icon = cfg.get("icon")
+    return icon if isinstance(icon, dict) else {}
+
+
+def _icon_url() -> str:
+    cfg = _icon_config()
+    value = cfg.get("url")
+    return str(value).strip() if isinstance(value, str) else ""
+
+
+async def _get_icon_mxc_uri(client: Any) -> str | None:
+    global _ICON_MXC_URI, _ICON_UPLOAD_ATTEMPTED
+
+    url = _icon_url()
+    if not url:
+        return None
+    if _ICON_MXC_URI:
+        return _ICON_MXC_URI
+    if url.startswith("mxc://"):
+        _ICON_MXC_URI = url
+        _ICON_UPLOAD_ATTEMPTED = True
+        return _ICON_MXC_URI
+    if _ICON_UPLOAD_ATTEMPTED:
+        return None
+
+    _ICON_UPLOAD_ATTEMPTED = True
+
+    def _download_icon() -> tuple[bytes, str, str]:
+        with urllib.request.urlopen(url, timeout=15) as response:  # noqa: S310
+            data = response.read(2 * 1024 * 1024)
+            content_type = response.headers.get_content_type()
+        guessed_type, _ = mimetypes.guess_type(url)
+        filename = url.rstrip("/").rsplit("/", 1)[-1] or "meshtastic.png"
+        return data, content_type or guessed_type or "image/png", filename
+
+    try:
+        image_data, content_type, filename = await asyncio.to_thread(_download_icon)
+        upload_response, _ = await client.upload(
+            io.BytesIO(image_data),
+            content_type=content_type,
+            filename=filename,
+            filesize=len(image_data),
+        )
+    except Exception:  # noqa: BLE001 - avatars are cosmetic; keep bridge startup safe
+        facade.logger.debug("Failed to upload Meshtastic portal icon", exc_info=True)
+        return None
+
+    content_uri = getattr(upload_response, "content_uri", None)
+    if not isinstance(content_uri, str) or not content_uri:
+        facade.logger.debug("Matrix icon upload did not return a content URI")
+        return None
+
+    _ICON_MXC_URI = content_uri
+    return _ICON_MXC_URI
+
+
+async def ensure_bot_avatar(client: Any) -> None:
+    global _BOT_AVATAR_UPDATED
+
+    cfg = _icon_config()
+    if cfg.get("bot", True) is False or _BOT_AVATAR_UPDATED:
+        return
+
+    mxc_uri = await _get_icon_mxc_uri(client)
+    if not mxc_uri:
+        return
+
+    try:
+        await client.set_avatar(mxc_uri)
+        _BOT_AVATAR_UPDATED = True
+        facade.logger.info("Updated Matrix bot avatar")
+    except AttributeError:
+        facade.logger.debug("Matrix client does not support set_avatar")
+    except Exception:  # noqa: BLE001
+        facade.logger.debug("Failed to update Matrix bot avatar", exc_info=True)
+
+
+async def _set_room_avatar(client: Any, room_id: str | None) -> None:
+    if not room_id or room_id in _ROOM_AVATAR_UPDATED:
+        return
+
+    cfg = _icon_config()
+    if cfg.get("space", True) is False:
+        return
+
+    mxc_uri = await _get_icon_mxc_uri(client)
+    if not mxc_uri:
+        return
+
+    content = {"url": mxc_uri}
+    try:
+        await client.room_put_state(
+            room_id=room_id,
+            event_type="m.room.avatar",
+            state_key="",
+            content=content,
+        )
+    except TypeError:
+        try:
+            await client.room_put_state(room_id, "m.room.avatar", content, "")
+        except Exception:  # noqa: BLE001
+            facade.logger.debug("Failed to update Matrix room avatar", exc_info=True)
+            return
+    except Exception:  # noqa: BLE001
+        facade.logger.debug("Failed to update Matrix room avatar", exc_info=True)
+        return
+
+    _ROOM_AVATAR_UPDATED.add(room_id)
+    facade.logger.info("Updated Matrix room avatar for %s", room_id)
 
 
 async def _resolve_alias(client: Any, alias_localpart: str) -> str | None:
@@ -187,13 +308,15 @@ async def ensure_portal_space(client: Any) -> str | None:
         return None
 
     name = str(space_cfg.get("name") or DEFAULT_SPACE_NAME)
-    return await _create_room(
+    room_id = await _create_room(
         client,
         name=name,
         topic="Meshtastic bridge rooms",
         alias_localpart=_space_alias_localpart(),
         is_space=True,
     )
+    await _set_room_avatar(client, room_id)
+    return room_id
 
 
 def _channel_name_from_object(channel: Any, index: int) -> str | None:

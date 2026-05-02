@@ -41,6 +41,11 @@ meshtastic_portals:
   enabled: false
   alias_prefix: meshtastic
   invite_users: []
+  icon:
+    # Either an mxc:// URI or an image URL MMRelay can download and upload.
+    url: ""
+    bot: true
+    space: true
   control:
     enabled: false
     users: []
@@ -161,6 +166,7 @@ plugins:
     active: true
     #require_bot_mention: true  # Override global setting for this plugin only
     # Does not need to specify channels, as it's a Matrix-only plugin
+    #max_display: 30 # Default number of nodes shown by `nodes`; use `nodes all` to show all
 
 #community-plugins:
 #  sample_plugin:

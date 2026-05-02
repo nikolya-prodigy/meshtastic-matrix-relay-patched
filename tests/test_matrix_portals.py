@@ -6,6 +6,7 @@ import pytest
 import mmrelay.matrix_utils as facade
 from mmrelay.matrix.portals import (
     discover_channels,
+    ensure_bot_avatar,
     ensure_channel_rooms,
     ensure_control_room,
     ensure_dm_room,
@@ -19,6 +20,8 @@ class FakeClient:
         self.children: list[tuple[str, str]] = []
         self.invites: list[tuple[str, str]] = []
         self.sent: list[tuple[str, dict]] = []
+        self.avatars: list[tuple[str, dict]] = []
+        self.bot_avatar: str | None = None
 
     async def room_resolve_alias(self, _alias: str) -> SimpleNamespace:
         return SimpleNamespace(room_id=None)
@@ -30,7 +33,22 @@ class FakeClient:
     async def room_put_state(
         self, room_id: str, event_type: str, state_key: str, content: dict
     ) -> SimpleNamespace:
-        self.children.append((room_id, state_key))
+        if event_type == "m.room.avatar":
+            self.avatars.append((room_id, content))
+        else:
+            self.children.append((room_id, state_key))
+        return SimpleNamespace()
+
+    async def upload(
+        self, _file_obj, content_type: str, filename: str, filesize: int
+    ) -> tuple[SimpleNamespace, None]:
+        assert content_type
+        assert filename
+        assert filesize > 0
+        return SimpleNamespace(content_uri="mxc://example.org/meshtastic"), None
+
+    async def set_avatar(self, avatar_url: str) -> SimpleNamespace:
+        self.bot_avatar = avatar_url
         return SimpleNamespace()
 
     async def room_invite(self, room_id: str, user_id: str) -> SimpleNamespace:
@@ -105,6 +123,43 @@ async def test_ensure_channel_rooms_creates_space_and_channel_rooms(monkeypatch)
         ("!room2:example.org", "@nikolya:example.org"),
     ]
     assert client.children == [("!room1:example.org", "!room2:example.org")]
+
+
+@pytest.mark.asyncio
+async def test_portal_icon_can_set_bot_and_space_avatar(monkeypatch) -> None:
+    client = FakeClient()
+    config = {
+        "matrix_rooms": [],
+        "meshtastic": {"meshnet_name": "LongFast"},
+        "meshtastic_portals": {
+            "enabled": True,
+            "icon": {
+                "url": "mxc://example.org/meshtastic",
+                "bot": True,
+                "space": True,
+            },
+        },
+    }
+    interface = SimpleNamespace(
+        localNode=SimpleNamespace(
+            channels=[SimpleNamespace(settings=SimpleNamespace(name="LongFast"))]
+        )
+    )
+    monkeypatch.setattr(facade, "config", config)
+    monkeypatch.setattr(facade, "bot_user_id", "@meshtasticbot:example.org")
+    monkeypatch.setattr(facade, "join_matrix_room", AsyncMock())
+    monkeypatch.setattr("mmrelay.matrix.portals._ICON_MXC_URI", None)
+    monkeypatch.setattr("mmrelay.matrix.portals._ICON_UPLOAD_ATTEMPTED", False)
+    monkeypatch.setattr("mmrelay.matrix.portals._BOT_AVATAR_UPDATED", False)
+    monkeypatch.setattr("mmrelay.matrix.portals._ROOM_AVATAR_UPDATED", set())
+
+    await ensure_bot_avatar(client)
+    await ensure_channel_rooms(client, interface, config)
+
+    assert client.bot_avatar == "mxc://example.org/meshtastic"
+    assert client.avatars == [
+        ("!room1:example.org", {"url": "mxc://example.org/meshtastic"})
+    ]
 
 
 @pytest.mark.asyncio

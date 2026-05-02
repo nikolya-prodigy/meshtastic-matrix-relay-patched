@@ -207,11 +207,7 @@ class TestNodesPlugin(unittest.TestCase):
         description = self.plugin.description
 
         self.assertIn("Show mesh radios and node data", description)
-        self.assertIn("$shortname $longname", description)
-        self.assertIn("$devicemodel", description)
-        self.assertIn("$battery $voltage", description)
-        self.assertIn("$snr", description)
-        self.assertIn("$lastseen", description)
+        self.assertIn("Usage: nodes [limit|all]", description)
 
     @patch("mmrelay.meshtastic_utils.connect_meshtastic")
     def test_generate_response_with_full_data(self, mock_connect):
@@ -238,12 +234,12 @@ class TestNodesPlugin(unittest.TestCase):
         self.assertIn("LORA32_V2_1", response)
 
         # Should contain battery and voltage info for nodes with data
-        self.assertIn("85% 4.2V", response)
-        self.assertIn("45% 3.8V", response)
+        self.assertIn("battery: 85% 4.2V", response)
+        self.assertIn("battery: 45% 3.8V", response)
 
         # Should contain SNR info for nodes with data
-        self.assertIn("12.5 dB", response)
-        self.assertIn("-8.0 dB", response)
+        self.assertIn("snr: 12.5 dB", response)
+        self.assertIn("snr: -8.0 dB", response)
 
         # Should contain relative time info
         self.assertIn("minutes ago", response)
@@ -277,7 +273,7 @@ class TestNodesPlugin(unittest.TestCase):
         self.assertIn("MIN Minimal Node", response)
         self.assertIn("UNKNOWN", response)
         self.assertIn("?% ?V", response)  # Default values for missing battery/voltage
-        self.assertIn("/ ?", response)  # No last heard time
+        self.assertIn("last: ?", response)  # No last heard time
 
     @patch("mmrelay.meshtastic_utils.connect_meshtastic")
     def test_generate_response_missing_hw_model_defaults_unknown(self, mock_connect):
@@ -297,7 +293,8 @@ class TestNodesPlugin(unittest.TestCase):
 
         response = self.plugin.generate_response()
 
-        self.assertIn("NHW No Hw Model / Unknown", response)
+        self.assertIn("NHW No Hw Model", response)
+        self.assertIn("model: Unknown", response)
 
     @patch("mmrelay.meshtastic_utils.connect_meshtastic")
     def test_generate_response_missing_user_defaults_unknown(self, mock_connect):
@@ -310,7 +307,8 @@ class TestNodesPlugin(unittest.TestCase):
 
         response = self.plugin.generate_response()
 
-        self.assertIn("Unknown Unknown / Unknown", response)
+        self.assertIn("Unknown Unknown", response)
+        self.assertIn("model: Unknown", response)
 
     @patch("mmrelay.meshtastic_utils.connect_meshtastic")
     def test_generate_response_skips_non_dict_node_info(self, mock_connect):
@@ -327,7 +325,8 @@ class TestNodesPlugin(unittest.TestCase):
         response = self.plugin.generate_response()
 
         self.assertIn("Nodes: 1", response)
-        self.assertIn("OK Valid / Unknown", response)
+        self.assertIn("OK Valid", response)
+        self.assertIn("model: Unknown", response)
         self.assertNotIn("not-a-dict", response)
 
     @patch("mmrelay.meshtastic_utils.connect_meshtastic")
@@ -353,8 +352,9 @@ class TestNodesPlugin(unittest.TestCase):
         response = self.plugin.generate_response()
 
         self.assertIn("Nodes: 1", response)
-        self.assertIn("BAD Bad LastHeard / TEST", response)
-        self.assertIn("/ ?", response)
+        self.assertIn("BAD Bad LastHeard", response)
+        self.assertIn("model: TEST", response)
+        self.assertIn("last: ?", response)
 
     @patch("mmrelay.meshtastic_utils.connect_meshtastic")
     def test_generate_response_with_null_values(self, mock_connect):
@@ -382,7 +382,7 @@ class TestNodesPlugin(unittest.TestCase):
         self.assertIn("Nodes: 1", response)
         self.assertIn("NULL Null Node", response)
         self.assertIn("?% ?V", response)  # Default values for null battery/voltage
-        self.assertIn("/ ?", response)  # No last heard time
+        self.assertIn("last: ?", response)  # No last heard time
 
     def test_get_relative_time_future_timestamp(self):
         """Future timestamps should return 'Just now' (line 73)."""
@@ -410,7 +410,7 @@ class TestNodesPlugin(unittest.TestCase):
         mock_connect.return_value = client
         response = self.plugin.generate_response()
         self.assertIn("ZER Zero LH", response)
-        self.assertIn("/ ?", response)
+        self.assertIn("last: ?", response)
 
     def test_handle_meshtastic_message_always_false(self):
         """
@@ -684,6 +684,44 @@ class TestNodesPlugin(unittest.TestCase):
         self.assertIn("NUL Null Hops Node", response)
         # Should have two instances of "? hops away"
         self.assertEqual(response.count("? hops away"), 2)
+
+    @patch("mmrelay.meshtastic_utils.connect_meshtastic")
+    def test_generate_response_supports_limit_argument(self, mock_connect):
+        """The nodes command can limit output while reporting the full count."""
+        client = MagicMock()
+        client.nodes = {
+            "node_old": {
+                "user": {"shortName": "OLD", "longName": "Old", "hwModel": "TEST"},
+                "lastHeard": (datetime.now() - timedelta(hours=2)).timestamp(),
+            },
+            "node_new": {
+                "user": {"shortName": "NEW", "longName": "New", "hwModel": "TEST"},
+                "lastHeard": (datetime.now() - timedelta(minutes=1)).timestamp(),
+            },
+        }
+        mock_connect.return_value = client
+
+        response = self.plugin.generate_response("1")
+
+        self.assertIn("Nodes: 2, showing 1", response)
+        self.assertIn("1. NEW New", response)
+        self.assertNotIn("OLD Old", response)
+
+    @patch("mmrelay.meshtastic_utils.connect_meshtastic")
+    def test_generate_response_all_argument_disables_limit(self, mock_connect):
+        """The `nodes all` path renders all known nodes."""
+        client = MagicMock()
+        client.nodes = {
+            "node_a": {"user": {"shortName": "A", "longName": "Alpha"}},
+            "node_b": {"user": {"shortName": "B", "longName": "Beta"}},
+        }
+        mock_connect.return_value = client
+
+        response = self.plugin.generate_response("all")
+
+        self.assertIn("Nodes: 2", response)
+        self.assertIn("A Alpha", response)
+        self.assertIn("B Beta", response)
 
     def test_handle_room_message_exception_handler(self):
         """Test exception handler in handle_room_message (lines 224-227)."""

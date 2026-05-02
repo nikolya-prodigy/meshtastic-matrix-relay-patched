@@ -23,6 +23,7 @@ from mmrelay.log_utils import get_logger
 from mmrelay.plugins.base_plugin import BasePlugin
 
 logger = get_logger(__name__)
+DEFAULT_NODES_LIMIT = 30
 
 
 def get_relative_time(timestamp: float) -> str:
@@ -82,21 +83,48 @@ class Plugin(BasePlugin):
         """
         Provide the plugin description and the node-list line format.
 
-        The returned string contains a human-readable description followed by an example node line format using these placeholders: $shortname, $longname, $devicemodel, $battery, $voltage, $snr, $hops, $lastseen.
+        The returned string contains a human-readable description and usage hint.
 
         Returns:
-            A multiline string with the plugin description and the node output format.
+            A multiline string with the plugin description and usage hint.
         """
         return """Show mesh radios and node data
 
-$shortname $longname / $devicemodel / $battery $voltage / $snr / $hops / $lastseen
+Usage: nodes [limit|all]
 """
 
-    def generate_response(self) -> str:
+    def _parse_limit(self, args: str | None) -> int | None:
+        text = (args or "").strip().casefold()
+        if not text:
+            raw_limit = self.config.get("max_display", DEFAULT_NODES_LIMIT)
+            try:
+                return max(1, int(raw_limit))
+            except (TypeError, ValueError):
+                return DEFAULT_NODES_LIMIT
+        if text in {"all", "*"}:
+            return None
+        try:
+            return max(1, int(text.split()[0]))
+        except (TypeError, ValueError):
+            return DEFAULT_NODES_LIMIT
+
+    @staticmethod
+    def _last_heard_timestamp(info: dict[str, Any]) -> float:
+        value = info.get("lastHeard")
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return -1
+        return parsed if parsed > 0 else -1
+
+    def generate_response(self, args: str | None = None) -> str:
         """
         Builds a textual summary of known Meshtastic nodes and their reported metrics.
 
-        The returned string begins with "Nodes: <count>" and includes one line per node with short name, long name, hardware model, battery percentage, voltage, SNR (in dB) when available, hop distance, and last-heard relative time. If the Meshtastic device cannot be contacted, returns the error message "Unable to connect to Meshtastic device."
+        The returned string begins with "Nodes: <count>" and includes one readable
+        numbered block per node with short name, long name, hardware model, battery
+        percentage, voltage, SNR, hop distance, and last-heard relative time. If
+        the Meshtastic device cannot be contacted, returns an error message.
 
         Returns:
             response (str): The multi-line nodes summary or an error message when no Meshtastic client is available.
@@ -107,18 +135,22 @@ $shortname $longname / $devicemodel / $battery $voltage / $snr / $hops / $lastse
         if meshtastic_client is None:
             return "Unable to connect to Meshtastic device."
 
+        limit = self._parse_limit(args)
+        nodes = [
+            (node_id, info)
+            for node_id, info in meshtastic_client.nodes.items()
+            if isinstance(info, dict)
+        ]
+        nodes.sort(key=lambda item: self._last_heard_timestamp(item[1]), reverse=True)
+
         node_lines: list[str] = []
-        valid_node_count = 0
-
-        for _node, info in meshtastic_client.nodes.items():
-            if not isinstance(info, dict):
-                continue
-
+        for display_index, (node_id, info) in enumerate(nodes[:limit], start=1):
             user = info.get("user")
             user_info = user if isinstance(user, dict) else {}
             short_name = user_info.get("shortName") or UNKNOWN_NODE_VALUE
             long_name = user_info.get("longName") or UNKNOWN_NODE_VALUE
             hw_model = user_info.get("hwModel") or UNKNOWN_NODE_VALUE
+            stable_node_id = user_info.get("id") or node_id
 
             hops = "? hops away"
             hops_away = info.get("hopsAway")
@@ -159,18 +191,20 @@ $shortname $longname / $devicemodel / $battery $voltage / $snr / $hops / $lastse
                 if battery_level is not None:
                     battery = f"{battery_level}%"
 
-            parts = [
-                f"{short_name} {long_name}",
-                hw_model,
-                f"{battery} {voltage}",
-                snr,
-                hops,
-                last_heard,
-            ]
-            node_lines.append(" / ".join(part for part in parts if part) + "\n")
-            valid_node_count += 1
+            node_lines.append(
+                f"{display_index}. {short_name} {long_name}\n"
+                f"   id: {stable_node_id}\n"
+                f"   model: {hw_model}\n"
+                f"   battery: {battery} {voltage}\n"
+                f"   link: {hops}, snr: {snr or '?'}\n"
+                f"   last: {last_heard}\n"
+            )
 
-        response = f"Nodes: {valid_node_count}\n"
+        total_count = len(nodes)
+        if limit is not None and total_count > limit:
+            response = f"Nodes: {total_count}, showing {limit}. Use `nodes all` to show all.\n\n"
+        else:
+            response = f"Nodes: {total_count}\n\n"
         return response + "".join(node_lines)
 
     async def handle_meshtastic_message(
@@ -215,7 +249,9 @@ $shortname $longname / $devicemodel / $battery $voltage / $snr / $hops / $lastse
         _ = full_message
 
         try:
-            response = await asyncio.to_thread(self.generate_response)
+            parsed = self.get_matching_matrix_command_with_args(event)
+            args = parsed[1] if parsed else ""
+            response = await asyncio.to_thread(self.generate_response, args)
             await self.send_matrix_message(
                 room_id=room.room_id,
                 message=response,
