@@ -81,8 +81,8 @@ from mmrelay.message_queue import (
 from mmrelay.paths import get_home_dir, get_legacy_dirs, get_legacy_env_vars
 from mmrelay.plugin_loader import load_plugins, shutdown_plugins
 
-# Import as module to set event_loop.
-from mmrelay import meshtastic_utils  # isort: skip
+# Import as modules to set/read shared runtime state.
+from mmrelay import matrix_utils, meshtastic_utils  # isort: skip
 
 # Initialize logger
 logger = get_logger(name=APP_DISPLAY_NAME)
@@ -406,6 +406,8 @@ async def main(config: dict[str, Any]) -> None:
         ConnectionError: If a Matrix client cannot be established and operation cannot continue.
     """
     # Extract Matrix configuration
+    if "matrix_rooms" not in config and matrix_utils.portals_enabled(config):
+        config["matrix_rooms"] = []
     matrix_rooms: list[dict[str, Any]] = config["matrix_rooms"]
 
     loop = asyncio.get_running_loop()
@@ -750,6 +752,14 @@ async def main(config: dict[str, Any]) -> None:
             raise ConnectionError(
                 "Failed to connect to Matrix. Cannot continue without Matrix client."
             )
+
+        if matrix_utils.portals_enabled(config):
+            await matrix_utils.ensure_channel_rooms(
+                matrix_client,
+                meshtastic_utils.meshtastic_client,
+                config,
+            )
+            matrix_rooms = config["matrix_rooms"]
 
         # Join the rooms specified in the config.yaml
         for room in matrix_rooms:

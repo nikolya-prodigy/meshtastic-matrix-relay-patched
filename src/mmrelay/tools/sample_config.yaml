@@ -35,6 +35,26 @@ matrix_rooms: # Needs at least 1 room & channel, but supports all Meshtastic cha
   - id: "!someroomid:example.matrix.org"
     meshtastic_channel: 2
 
+meshtastic_portals:
+  # Experimental bot-managed room provisioning. This is not an appservice:
+  # MMRelay creates and manages Matrix rooms as the configured bot user.
+  enabled: false
+  alias_prefix: meshtastic
+  space:
+    enabled: true
+    name: Meshtastic
+    alias: meshtastic-space
+  channels:
+    auto_create: true
+    # Create rooms for unnamed/empty channels too. When false, MMRelay only
+    # creates rooms for named channels it can read from the local node, plus
+    # channels already listed in matrix_rooms.
+    include_empty: false
+    name_template: "#{index} {name}"
+  direct_messages:
+    auto_create: true
+    name_template: "DM {name}"
+
 meshtastic:
   connection_type: tcp # Choose either "tcp", "serial", or "ble"
   host: meshtastic.local # Only used when connection is "tcp"

@@ -334,6 +334,13 @@ from mmrelay.matrix.room_mapping import (
     _resolve_aliases_in_mapping,
     _update_room_id_in_mapping,
 )
+from mmrelay.matrix.portals import (
+    discover_channels,
+    ensure_channel_rooms,
+    ensure_dm_room,
+    ensure_portal_space,
+    portals_enabled,
+)
 from mmrelay.matrix.prefixes import (
     _add_truncated_vars,
     _can_auto_create_credentials,

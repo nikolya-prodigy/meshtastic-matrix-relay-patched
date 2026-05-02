@@ -2,12 +2,15 @@ name: Docker Build and Publish
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - patch/bot-managed-portals
   release:
     types: [published]
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: jeremiah-k/mmrelay
+  IMAGE_NAME: ${{ github.repository_owner }}/mmrelay-patched
 
 permissions:
   contents: read
@@ -70,7 +73,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta

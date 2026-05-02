@@ -450,6 +450,9 @@ async def connect_matrix(
         return None
     local_config_dict = local_config
 
+    if "matrix_rooms" not in local_config and facade.portals_enabled(local_config_dict):
+        local_config_dict["matrix_rooms"] = []
+
     if "matrix_rooms" not in local_config or not isinstance(
         local_config["matrix_rooms"], (dict, list)
     ):

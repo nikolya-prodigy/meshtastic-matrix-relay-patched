@@ -39,6 +39,16 @@ __all__ = [
 ]
 
 
+def _meshtastic_destination_kwargs(room_config: dict[str, Any]) -> dict[str, Any]:
+    destination = room_config.get("meshtastic_destination")
+    if destination in (None, ""):
+        return {}
+    kwargs: dict[str, Any] = {"destinationId": destination}
+    if room_config.get("meshtastic_want_ack", True):
+        kwargs["wantAck"] = True
+    return kwargs
+
+
 async def on_decryption_failure(room: MatrixRoom, event: MegolmEvent) -> None:
     """
     Handle a MegolmEvent that could not be decrypted by requesting missing session keys with exponential backoff retry.
@@ -401,6 +411,7 @@ async def on_room_message(
                     meshtastic_interface.sendText,
                     text=reaction_message,
                     channelIndex=meshtastic_channel,
+                    **_meshtastic_destination_kwargs(room_config),
                     description=f"Remote reaction from {meshnet_name}",
                 )
 
@@ -472,6 +483,7 @@ async def on_room_message(
                     meshtastic_interface.sendText,
                     text=reaction_message,
                     channelIndex=meshtastic_channel,
+                    **_meshtastic_destination_kwargs(room_config),
                     description=f"Local reaction from {full_display_name}",
                 )
 
@@ -668,6 +680,7 @@ async def on_room_message(
                 meshtastic_interface.sendText,
                 text=full_message,
                 channelIndex=meshtastic_channel,
+                **_meshtastic_destination_kwargs(room_config),
                 description=f"Message from {full_display_name}",
                 mapping_info=mapping_info,
             )

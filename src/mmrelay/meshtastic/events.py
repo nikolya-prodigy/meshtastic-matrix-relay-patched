@@ -983,9 +983,54 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
         )
 
         if is_direct_message:
-            facade.logger.debug(
-                f"Received a direct message from {longname}: {text}. Not relaying to Matrix."
+            from mmrelay import matrix_utils as matrix_facade
+
+            if not matrix_facade.portals_enabled(facade.config):
+                facade.logger.debug(
+                    f"Received a direct message from {longname}: {text}. Not relaying to Matrix."
+                )
+                return
+            room_id = None
+            try:
+                matrix_client = matrix_facade.matrix_client
+                if matrix_client is None:
+                    matrix_client = matrix_facade.asyncio.run_coroutine_threadsafe(
+                        matrix_facade.connect_matrix(), loop
+                    ).result(timeout=10)
+                if matrix_client is not None:
+                    room_id = matrix_facade.asyncio.run_coroutine_threadsafe(
+                        matrix_facade.ensure_dm_room(
+                            matrix_client, interface, sender, channel
+                        ),
+                        loop,
+                    ).result(timeout=30)
+            except Exception:
+                facade.logger.exception("Failed to create/find Meshtastic DM room")
+                return
+            if not room_id:
+                facade.logger.warning(
+                    "No Matrix DM room available for Meshtastic sender %s", sender
+                )
+                return
+            facade.logger.info(
+                f"Relaying Meshtastic direct message from {longname} to Matrix"
             )
+            try:
+                facade._fire_and_forget(
+                    matrix_relay(
+                        room_id,
+                        text,
+                        longname,
+                        shortname,
+                        meshnet_name,
+                        decoded.get("portnum", 0),
+                        meshtastic_id=packet.get("id"),
+                        meshtastic_text=text,
+                    ),
+                    loop=loop,
+                )
+            except Exception:
+                facade.logger.exception("Error relaying direct message to Matrix")
             return
         if found_matching_plugin:
             facade.logger.debug(

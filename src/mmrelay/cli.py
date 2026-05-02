@@ -1329,7 +1329,13 @@ def check_config(args: argparse.Namespace | None = None) -> bool:
                         return False
 
                 # Check matrix_rooms section
-                if "matrix_rooms" not in config or not config["matrix_rooms"]:
+                portals_cfg = config.get("meshtastic_portals")
+                portals_enabled = isinstance(portals_cfg, dict) and bool(
+                    portals_cfg.get("enabled")
+                )
+                if (
+                    "matrix_rooms" not in config or not config["matrix_rooms"]
+                ) and not portals_enabled:
                     print("Error: Missing or empty 'matrix_rooms' section in config")
                     print(
                         "   You need to map at least one Matrix room to a Meshtastic channel."
@@ -1340,6 +1346,7 @@ def check_config(args: argparse.Namespace | None = None) -> bool:
                     print("         meshtastic_channel: 0")
                     return False
 
+                config.setdefault("matrix_rooms", [])
                 if not isinstance(config["matrix_rooms"], list):
                     print("Error: 'matrix_rooms' must be a list")
                     print("   Example:")
