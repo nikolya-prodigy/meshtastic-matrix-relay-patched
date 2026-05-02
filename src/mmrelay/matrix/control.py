@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import mmrelay.matrix_utils as facade
+from mmrelay.constants.domain import (
+    RELATIVE_TIME_DAYS_THRESHOLD,
+    SECONDS_PER_DAY,
+    SECONDS_PER_HOUR,
+    SECONDS_PER_MINUTE,
+    UNKNOWN_NODE_VALUE,
+)
+from mmrelay.constants.formats import DATE_FORMAT_LONG, SNR_UNIT_SUFFIX
 
 CONTROL_HELP = """Meshtastic bot control
 
@@ -13,6 +23,10 @@ help - Show this help
 ping - Check that the bridge responds
 health - Show mesh health summary
 nodes [limit|all] - List known Meshtastic nodes
+node <number> - Show details for a node from the last nodes list
+dm <number> - Create or open a direct Matrix room for a node
+rooms - List Matrix rooms managed by this bridge
+resync - Create any missing channel rooms again
 map - Render a map of nodes with positions
 weather - Current weather for the mesh area
 hourly - Hourly weather forecast
@@ -23,6 +37,31 @@ airUtilTx - Telemetry air utilization graph
 
 Channel rooms are for Meshtastic traffic. Use this chat for bot commands.
 """.strip()
+
+DEFAULT_NODES_LIMIT = 30
+_NODE_INDEX_CACHE: dict[tuple[str, str], list["NodeEntry"]] = {}
+
+
+@dataclass(frozen=True)
+class NodeEntry:
+    number: int
+    node_id: str
+    short_name: str
+    long_name: str
+    hw_model: str
+    battery: str
+    voltage: str
+    snr: str
+    hops: str
+    last_heard: str
+
+    @property
+    def title(self) -> str:
+        if self.short_name == UNKNOWN_NODE_VALUE:
+            return self.long_name
+        if self.long_name == UNKNOWN_NODE_VALUE or self.long_name == self.short_name:
+            return self.short_name
+        return f"{self.short_name} {self.long_name}"
 
 
 def _portal_config(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -101,6 +140,277 @@ def _split_command(text: str) -> tuple[str, str]:
     return command.strip(), args.strip()
 
 
+def _relative_time(timestamp: float) -> str:
+    now = datetime.now()
+    dt = datetime.fromtimestamp(timestamp)
+    total_seconds = int((now - dt).total_seconds())
+    if total_seconds <= 0:
+        return "Just now"
+    if total_seconds > RELATIVE_TIME_DAYS_THRESHOLD * SECONDS_PER_DAY:
+        return dt.strftime(DATE_FORMAT_LONG)
+    days = total_seconds // SECONDS_PER_DAY
+    if days >= 1:
+        return f"{days} day{'s' if days != 1 else ''} ago"
+    hours = total_seconds // SECONDS_PER_HOUR
+    if hours >= 1:
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    minutes = total_seconds // SECONDS_PER_MINUTE
+    if minutes >= 1:
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    return "Just now"
+
+
+def _last_heard_timestamp(info: dict[str, Any]) -> float:
+    value = info.get("lastHeard")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return -1
+    return parsed if parsed > 0 else -1
+
+
+def _format_hops(info: dict[str, Any]) -> str:
+    hops_away = info.get("hopsAway")
+    if hops_away is None:
+        return "? hops away"
+    if hops_away == 0:
+        return "direct"
+    if hops_away == 1:
+        return "1 hop away"
+    return f"{hops_away} hops away"
+
+
+def _format_battery(info: dict[str, Any]) -> tuple[str, str]:
+    battery = "?%"
+    voltage = "?V"
+    metrics = info.get("deviceMetrics")
+    if isinstance(metrics, dict):
+        if metrics.get("batteryLevel") is not None:
+            battery = f"{metrics['batteryLevel']}%"
+        if metrics.get("voltage") is not None:
+            voltage = f"{metrics['voltage']}V"
+    return battery, voltage
+
+
+def _build_node_index(interface: Any) -> list[NodeEntry]:
+    nodes = getattr(interface, "nodes", None)
+    if not isinstance(nodes, dict):
+        return []
+
+    raw_entries = [
+        (node_id, info)
+        for node_id, info in nodes.items()
+        if isinstance(info, dict)
+    ]
+    raw_entries.sort(key=lambda item: _last_heard_timestamp(item[1]), reverse=True)
+
+    entries: list[NodeEntry] = []
+    for number, (node_id, info) in enumerate(raw_entries, start=1):
+        user = info.get("user")
+        user_info = user if isinstance(user, dict) else {}
+        stable_node_id = str(user_info.get("id") or node_id)
+        snr = "?"
+        if info.get("snr") is not None:
+            snr = f"{info['snr']}{SNR_UNIT_SUFFIX}"
+        last_heard = "?"
+        timestamp = _last_heard_timestamp(info)
+        if timestamp > 0:
+            last_heard = _relative_time(timestamp)
+        battery, voltage = _format_battery(info)
+        entries.append(
+            NodeEntry(
+                number=number,
+                node_id=stable_node_id,
+                short_name=str(user_info.get("shortName") or UNKNOWN_NODE_VALUE),
+                long_name=str(user_info.get("longName") or UNKNOWN_NODE_VALUE),
+                hw_model=str(user_info.get("hwModel") or UNKNOWN_NODE_VALUE),
+                battery=battery,
+                voltage=voltage,
+                snr=snr,
+                hops=_format_hops(info),
+                last_heard=last_heard,
+            )
+        )
+    return entries
+
+
+def _parse_node_limit(args: str, config: dict[str, Any] | None) -> int | None:
+    text = args.strip().casefold()
+    if text in {"all", "*"}:
+        return None
+    if text:
+        try:
+            return max(1, int(text.split()[0]))
+        except (TypeError, ValueError):
+            return DEFAULT_NODES_LIMIT
+
+    plugins = config.get("plugins") if isinstance(config, dict) else None
+    nodes_cfg = plugins.get("nodes") if isinstance(plugins, dict) else None
+    raw_limit = nodes_cfg.get("max_display") if isinstance(nodes_cfg, dict) else None
+    try:
+        return max(1, int(raw_limit))
+    except (TypeError, ValueError):
+        return DEFAULT_NODES_LIMIT
+
+
+def _cache_key(room: Any, event: Any) -> tuple[str, str]:
+    return (str(getattr(room, "room_id", "")), str(getattr(event, "sender", "")))
+
+
+def _entry_brief(entry: NodeEntry) -> str:
+    return (
+        f"{entry.number}. {entry.title}\n"
+        f"   id: {entry.node_id}\n"
+        f"   model: {entry.hw_model}\n"
+        f"   battery: {entry.battery} {entry.voltage}\n"
+        f"   link: {entry.hops}, snr: {entry.snr}\n"
+        f"   last: {entry.last_heard}"
+    )
+
+
+async def _handle_nodes_command(room: Any, event: Any, args: str) -> bool:
+    interface = getattr(facade, "meshtastic_client", None)
+    if interface is None:
+        from mmrelay import meshtastic_utils
+
+        interface = getattr(meshtastic_utils, "meshtastic_client", None)
+    if interface is None:
+        await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
+        return True
+
+    entries = _build_node_index(interface)
+    _NODE_INDEX_CACHE[_cache_key(room, event)] = entries
+    limit = _parse_node_limit(args, facade.config)
+    shown = entries if limit is None else entries[:limit]
+    if not entries:
+        await send_control_message(room.room_id, "Nodes: 0")
+        return True
+
+    if limit is not None and len(entries) > limit:
+        header = f"Nodes: {len(entries)}, showing {len(shown)}. Use `nodes all` to show all."
+    else:
+        header = f"Nodes: {len(entries)}"
+    await send_control_message(
+        room.room_id,
+        header + "\n\n" + "\n\n".join(_entry_brief(entry) for entry in shown),
+    )
+    return True
+
+
+def _find_cached_node(room: Any, event: Any, args: str) -> NodeEntry | None:
+    number_text = args.strip().split(maxsplit=1)[0] if args.strip() else ""
+    try:
+        number = int(number_text)
+    except ValueError:
+        return None
+    entries = _NODE_INDEX_CACHE.get(_cache_key(room, event), [])
+    return next((entry for entry in entries if entry.number == number), None)
+
+
+async def _handle_node_command(room: Any, event: Any, args: str) -> bool:
+    entry = _find_cached_node(room, event, args)
+    if entry is None:
+        await send_control_message(
+            room.room_id,
+            "Node not found. Run `nodes` first, then use `node <number>`.",
+        )
+        return True
+    await send_control_message(room.room_id, _entry_brief(entry))
+    return True
+
+
+async def _handle_dm_command(room: Any, event: Any, args: str) -> bool:
+    entry = _find_cached_node(room, event, args)
+    if entry is None:
+        await send_control_message(
+            room.room_id,
+            "Node not found. Run `nodes` first, then use `dm <number>`.",
+        )
+        return True
+
+    client = getattr(facade, "matrix_client", None)
+    interface = getattr(facade, "meshtastic_client", None)
+    if interface is None:
+        from mmrelay import meshtastic_utils
+
+        interface = getattr(meshtastic_utils, "meshtastic_client", None)
+    if client is None or interface is None:
+        await send_control_message(room.room_id, "Matrix or Meshtastic client is not ready.")
+        return True
+
+    dm_room_id = await facade.ensure_dm_room(client, interface, entry.node_id)
+    if not dm_room_id:
+        await send_control_message(room.room_id, f"Failed to create DM room for {entry.title}.")
+        return True
+    await send_control_message(
+        room.room_id,
+        (
+            f"DM room is ready for {entry.title}.\n"
+            f"room: {dm_room_id}\n"
+            "Write your private message there."
+        ),
+    )
+    return True
+
+
+async def _handle_rooms_command(room: Any) -> bool:
+    matrix_rooms = (
+        facade.config.get("matrix_rooms", []) if isinstance(facade.config, dict) else []
+    )
+    if not isinstance(matrix_rooms, list) or not matrix_rooms:
+        await send_control_message(
+            room.room_id,
+            "No Matrix rooms are currently managed by the bridge.",
+        )
+        return True
+
+    lines = ["Managed Matrix rooms:"]
+    for index, room_config in enumerate(matrix_rooms, start=1):
+        if not isinstance(room_config, dict):
+            continue
+        room_type = room_config.get("meshtastic_portal_type", "channel")
+        room_id = room_config.get("id", "?")
+        if room_type == "channel":
+            label = (
+                f"channel #{room_config.get('meshtastic_channel', '?')} "
+                f"{room_config.get('meshtastic_channel_name', '')}"
+            ).strip()
+        elif room_type == "dm":
+            node_name = room_config.get(
+                "meshtastic_node_name",
+                room_config.get("meshtastic_destination", "?"),
+            )
+            label = f"dm {node_name}"
+        else:
+            label = str(room_type)
+        lines.append(f"{index}. {label}\n   room: {room_id}")
+    await send_control_message(room.room_id, "\n\n".join(lines))
+    return True
+
+
+async def _handle_resync_command(room: Any) -> bool:
+    client = getattr(facade, "matrix_client", None)
+    interface = getattr(facade, "meshtastic_client", None)
+    if interface is None:
+        from mmrelay import meshtastic_utils
+
+        interface = getattr(meshtastic_utils, "meshtastic_client", None)
+    if client is None or interface is None:
+        await send_control_message(room.room_id, "Matrix or Meshtastic client is not ready.")
+        return True
+    if not isinstance(facade.config, dict):
+        await send_control_message(room.room_id, "Bridge config is not ready.")
+        return True
+    before = len(facade.config.get("matrix_rooms", []))
+    await facade.ensure_channel_rooms(client, interface, facade.config)
+    after = len(facade.config.get("matrix_rooms", []))
+    await send_control_message(
+        room.room_id,
+        f"Resync complete. Managed rooms: {before} -> {after}.",
+    )
+    return True
+
+
 def _set_event_body(event: Any, body: str) -> tuple[Any, Any, Any]:
     old_body = getattr(event, "body", None)
     content = getattr(event, "source", {}).setdefault("content", {})
@@ -158,6 +468,16 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
     if command.casefold() == "help":
         await send_control_message(room.room_id, CONTROL_HELP)
         return True
+    if command.casefold() == "nodes":
+        return await _handle_nodes_command(room, event, args)
+    if command.casefold() == "node":
+        return await _handle_node_command(room, event, args)
+    if command.casefold() == "dm":
+        return await _handle_dm_command(room, event, args)
+    if command.casefold() == "rooms":
+        return await _handle_rooms_command(room)
+    if command.casefold() == "resync":
+        return await _handle_resync_command(room)
 
     from mmrelay.plugin_loader import load_plugins
 
@@ -184,7 +504,10 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
         if hasattr(handled, "__await__"):
             handled = await handled
         if not handled:
-            await send_control_message(room.room_id, f"Command did not produce a response: {command}")
+            await send_control_message(
+                room.room_id,
+                f"Command did not produce a response: {command}",
+            )
     except Exception:  # noqa: BLE001 - plugin isolation
         facade.logger.exception("Error handling control command %s", command)
         await send_control_message(room.room_id, f"Command failed: {command}")
