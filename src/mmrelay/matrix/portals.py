@@ -51,6 +51,14 @@ def _space_alias_localpart() -> str:
     return _slug(space_cfg.get("alias"), f"{DEFAULT_PORTAL_ALIAS_PREFIX}-space")
 
 
+def _invite_users() -> list[str]:
+    cfg = _portal_config(facade.config)
+    users = cfg.get("invite_users")
+    if not isinstance(users, list):
+        return []
+    return [user for user in users if isinstance(user, str) and user.startswith("@")]
+
+
 async def _resolve_alias(client: Any, alias_localpart: str) -> str | None:
     server = _server_name()
     if not server:
@@ -62,6 +70,14 @@ async def _resolve_alias(client: Any, alias_localpart: str) -> str | None:
         return None
     room_id = getattr(response, "room_id", None)
     return room_id if isinstance(room_id, str) and room_id else None
+
+
+async def _invite_configured_users(client: Any, room_id: str) -> None:
+    for user_id in _invite_users():
+        try:
+            await client.room_invite(room_id, user_id)
+        except Exception:  # noqa: BLE001 - users may already be joined/invited
+            facade.logger.debug("Failed to invite %s to %s", user_id, room_id, exc_info=True)
 
 
 async def _create_room(
@@ -76,6 +92,7 @@ async def _create_room(
     existing_room_id = await _resolve_alias(client, alias_localpart)
     if existing_room_id:
         await facade.join_matrix_room(client, existing_room_id)
+        await _invite_configured_users(client, existing_room_id)
         return existing_room_id
 
     kwargs: dict[str, Any] = {
@@ -84,6 +101,7 @@ async def _create_room(
         "visibility": RoomVisibility.private,
         "alias": alias_localpart,
         "is_direct": is_direct,
+        "invite": _invite_users(),
     }
     if is_space:
         kwargs["space"] = True
@@ -96,6 +114,7 @@ async def _create_room(
         legacy_kwargs = dict(kwargs)
         legacy_kwargs["visibility"] = "private"
         legacy_kwargs["room_alias_name"] = legacy_kwargs.pop("alias")
+        legacy_kwargs.pop("invite", None)
         if legacy_kwargs.pop("space", False):
             legacy_kwargs["creation_content"] = {"type": "m.space"}
         legacy_kwargs.pop("is_direct", None)
@@ -107,6 +126,7 @@ async def _create_room(
     room_id = getattr(response, "room_id", None)
     if isinstance(room_id, str) and room_id:
         facade.logger.info("Created Matrix room '%s' (%s)", name, room_id)
+        await _invite_configured_users(client, room_id)
         return room_id
 
     facade.logger.error(

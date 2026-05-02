@@ -40,6 +40,7 @@ meshtastic_portals:
   # MMRelay creates and manages Matrix rooms as the configured bot user.
   enabled: false
   alias_prefix: meshtastic
+  invite_users: []
   space:
     enabled: true
     name: Meshtastic

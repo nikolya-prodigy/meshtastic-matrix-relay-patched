@@ -16,6 +16,7 @@ class FakeClient:
     def __init__(self) -> None:
         self.created: list[dict] = []
         self.children: list[tuple[str, str]] = []
+        self.invites: list[tuple[str, str]] = []
 
     async def room_resolve_alias(self, _alias: str) -> SimpleNamespace:
         return SimpleNamespace(room_id=None)
@@ -28,6 +29,10 @@ class FakeClient:
         self, room_id: str, event_type: str, state_key: str, content: dict
     ) -> SimpleNamespace:
         self.children.append((room_id, state_key))
+        return SimpleNamespace()
+
+    async def room_invite(self, room_id: str, user_id: str) -> SimpleNamespace:
+        self.invites.append((room_id, user_id))
         return SimpleNamespace()
 
 
@@ -60,7 +65,10 @@ async def test_ensure_channel_rooms_creates_space_and_channel_rooms(monkeypatch)
     config = {
         "matrix_rooms": [],
         "meshtastic": {"meshnet_name": "LongFast"},
-        "meshtastic_portals": {"enabled": True},
+        "meshtastic_portals": {
+            "enabled": True,
+            "invite_users": ["@nikolya:example.org"],
+        },
     }
     interface = SimpleNamespace(
         localNode=SimpleNamespace(
@@ -83,6 +91,11 @@ async def test_ensure_channel_rooms_creates_space_and_channel_rooms(monkeypatch)
     ]
     assert client.created[0]["space"] is True
     assert client.created[1]["name"] == "#0 LongFast"
+    assert client.created[1]["invite"] == ["@nikolya:example.org"]
+    assert client.invites == [
+        ("!room1:example.org", "@nikolya:example.org"),
+        ("!room2:example.org", "@nikolya:example.org"),
+    ]
     assert client.children == [("!room1:example.org", "!room2:example.org")]
 
 
