@@ -759,6 +759,7 @@ async def main(config: dict[str, Any]) -> None:
                 meshtastic_utils.meshtastic_client,
                 config,
             )
+            await matrix_utils.ensure_control_room(matrix_client, config)
             matrix_rooms = config["matrix_rooms"]
 
         # Join the rooms specified in the config.yaml

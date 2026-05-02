@@ -41,6 +41,13 @@ meshtastic_portals:
   enabled: false
   alias_prefix: meshtastic
   invite_users: []
+  control:
+    enabled: false
+    users: []
+    room_name: Meshtastic bot
+    alias: meshtastic-control
+    send_welcome_on_start: true
+    allow_commands_in_portal_rooms: false
   space:
     enabled: true
     name: Meshtastic

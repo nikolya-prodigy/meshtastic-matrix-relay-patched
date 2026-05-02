@@ -336,6 +336,10 @@ async def on_room_message(
     if suppress:
         return
 
+    if facade.is_control_room(room_config):
+        await facade.handle_control_room_message(room, event)
+        return
+
     if is_reaction and not interactions["reactions"]:
         facade.logger.debug(
             "Reaction event encountered but reactions are disabled. Doing nothing."
@@ -572,33 +576,40 @@ async def on_room_message(
         elif portnum == facade.DETECTION_SENSOR_APP:
             portnum = facade.PORTNUM_DETECTION_SENSOR_APP
 
-    from mmrelay.plugin_loader import load_plugins
-
-    plugins = load_plugins()
-
     found_matching_plugin = False
-    for plugin in plugins:
-        if not found_matching_plugin:
-            try:
-                handler_result = plugin.handle_room_message(room, event, text)
-                if inspect.isawaitable(handler_result):
-                    found_matching_plugin = await handler_result
-                else:
-                    found_matching_plugin = bool(handler_result)
+    plugins: list[Any] = []
+    if facade.commands_allowed_in_portal_rooms(facade.config):
+        from mmrelay.plugin_loader import load_plugins
 
-                if found_matching_plugin:
-                    facade.logger.info(
-                        f"Processed command with plugin: {plugin.plugin_name} from {event.sender}"
+        plugins = load_plugins()
+
+        for plugin in plugins:
+            if not found_matching_plugin:
+                try:
+                    handler_result = plugin.handle_room_message(room, event, text)
+                    if inspect.isawaitable(handler_result):
+                        found_matching_plugin = await handler_result
+                    else:
+                        found_matching_plugin = bool(handler_result)
+
+                    if found_matching_plugin:
+                        facade.logger.info(
+                            f"Processed command with plugin: {plugin.plugin_name} from {event.sender}"
+                        )
+                except Exception as exc:  # noqa: BLE001 - broad catch for plugin isolation
+                    facade.logger.error(
+                        "Error processing message with plugin %s: %s",
+                        plugin.plugin_name,
+                        type(exc).__name__,
                     )
-            except Exception as exc:  # noqa: BLE001 - broad catch for plugin isolation
-                facade.logger.error(
-                    "Error processing message with plugin %s: %s",
-                    plugin.plugin_name,
-                    type(exc).__name__,
-                )
-                facade.logger.exception(
-                    "Error processing message with plugin %s", plugin.plugin_name
-                )
+                    facade.logger.exception(
+                        "Error processing message with plugin %s", plugin.plugin_name
+                    )
+    elif text.startswith("!") or (
+        isinstance(facade.bot_user_id, str) and text.startswith(facade.bot_user_id)
+    ):
+        facade.logger.debug("Ignoring command-like Matrix message in portal room")
+        return
 
     if found_matching_plugin:
         facade.logger.debug("Message handled by plugin, not sending to mesh")

@@ -59,6 +59,25 @@ def _invite_users() -> list[str]:
     return [user for user in users if isinstance(user, str) and user.startswith("@")]
 
 
+def _control_config() -> dict[str, Any]:
+    cfg = _portal_config(facade.config)
+    control = cfg.get("control")
+    return control if isinstance(control, dict) else {}
+
+
+def _control_alias_localpart() -> str:
+    cfg = _control_config()
+    return _slug(cfg.get("alias"), f"{DEFAULT_PORTAL_ALIAS_PREFIX}-control")
+
+
+def _control_users() -> list[str]:
+    cfg = _control_config()
+    users = cfg.get("users")
+    if isinstance(users, list):
+        return [user for user in users if isinstance(user, str) and user.startswith("@")]
+    return _invite_users()
+
+
 async def _resolve_alias(client: Any, alias_localpart: str) -> str | None:
     server = _server_name()
     if not server:
@@ -72,8 +91,10 @@ async def _resolve_alias(client: Any, alias_localpart: str) -> str | None:
     return room_id if isinstance(room_id, str) and room_id else None
 
 
-async def _invite_configured_users(client: Any, room_id: str) -> None:
-    for user_id in _invite_users():
+async def _invite_configured_users(
+    client: Any, room_id: str, users: list[str] | None = None
+) -> None:
+    for user_id in users if users is not None else _invite_users():
         try:
             await client.room_invite(room_id, user_id)
         except Exception:  # noqa: BLE001 - users may already be joined/invited
@@ -88,11 +109,12 @@ async def _create_room(
     alias_localpart: str,
     is_space: bool = False,
     is_direct: bool = False,
+    invite_users: list[str] | None = None,
 ) -> str | None:
     existing_room_id = await _resolve_alias(client, alias_localpart)
     if existing_room_id:
         await facade.join_matrix_room(client, existing_room_id)
-        await _invite_configured_users(client, existing_room_id)
+        await _invite_configured_users(client, existing_room_id, invite_users)
         return existing_room_id
 
     kwargs: dict[str, Any] = {
@@ -101,7 +123,7 @@ async def _create_room(
         "visibility": RoomVisibility.private,
         "alias": alias_localpart,
         "is_direct": is_direct,
-        "invite": _invite_users(),
+        "invite": invite_users if invite_users is not None else _invite_users(),
     }
     if is_space:
         kwargs["space"] = True
@@ -126,7 +148,7 @@ async def _create_room(
     room_id = getattr(response, "room_id", None)
     if isinstance(room_id, str) and room_id:
         facade.logger.info("Created Matrix room '%s' (%s)", name, room_id)
-        await _invite_configured_users(client, room_id)
+        await _invite_configured_users(client, room_id, invite_users)
         return room_id
 
     facade.logger.error(
@@ -290,6 +312,68 @@ async def ensure_channel_rooms(client: Any, interface: Any, config: dict[str, An
             }
         )
         await _add_space_child(client, space_id, room_id)
+
+
+async def ensure_control_room(client: Any, config: dict[str, Any]) -> str | None:
+    cfg = _control_config()
+    if cfg.get("enabled", False) is not True:
+        return None
+
+    users = _control_users()
+    if not users:
+        facade.logger.warning("Control room is enabled but no control users are configured")
+        return None
+
+    matrix_rooms = config.setdefault("matrix_rooms", [])
+    if not isinstance(matrix_rooms, list):
+        facade.logger.warning("Control room requires matrix_rooms to be a list")
+        return None
+
+    for room in matrix_rooms:
+        if isinstance(room, dict) and room.get("meshtastic_portal_type") == "control":
+            room_id = room.get("id")
+            if isinstance(room_id, str):
+                await _invite_configured_users(client, room_id, users)
+                return room_id
+
+    room_name = str(cfg.get("room_name") or "Meshtastic bot")
+    room_id = await _create_room(
+        client,
+        name=room_name,
+        topic="Meshtastic bridge control room",
+        alias_localpart=_control_alias_localpart(),
+        is_direct=True,
+        invite_users=users,
+    )
+    if not room_id:
+        return None
+
+    matrix_rooms.append(
+        {
+            "id": room_id,
+            "meshtastic_portal_type": "control",
+        }
+    )
+
+    space_id = await ensure_portal_space(client)
+    await _add_space_child(client, space_id, room_id)
+
+    if cfg.get("send_welcome_on_start", False):
+        try:
+            from mmrelay.matrix.control import CONTROL_HELP
+
+            await client.room_send(
+                room_id=room_id,
+                message_type="m.room.message",
+                content={
+                    "msgtype": "m.text",
+                    "body": f"Meshtastic control room is ready.\n\n{CONTROL_HELP}",
+                },
+            )
+        except Exception:  # noqa: BLE001
+            facade.logger.debug("Failed to send control welcome message", exc_info=True)
+
+    return room_id
 
 
 async def ensure_dm_room(

@@ -7,6 +7,7 @@ import mmrelay.matrix_utils as facade
 from mmrelay.matrix.portals import (
     discover_channels,
     ensure_channel_rooms,
+    ensure_control_room,
     ensure_dm_room,
     portals_enabled,
 )
@@ -17,6 +18,7 @@ class FakeClient:
         self.created: list[dict] = []
         self.children: list[tuple[str, str]] = []
         self.invites: list[tuple[str, str]] = []
+        self.sent: list[tuple[str, dict]] = []
 
     async def room_resolve_alias(self, _alias: str) -> SimpleNamespace:
         return SimpleNamespace(room_id=None)
@@ -33,6 +35,12 @@ class FakeClient:
 
     async def room_invite(self, room_id: str, user_id: str) -> SimpleNamespace:
         self.invites.append((room_id, user_id))
+        return SimpleNamespace()
+
+    async def room_send(
+        self, room_id: str, message_type: str, content: dict
+    ) -> SimpleNamespace:
+        self.sent.append((room_id, content))
         return SimpleNamespace()
 
 
@@ -97,6 +105,40 @@ async def test_ensure_channel_rooms_creates_space_and_channel_rooms(monkeypatch)
         ("!room2:example.org", "@nikolya:example.org"),
     ]
     assert client.children == [("!room1:example.org", "!room2:example.org")]
+
+
+@pytest.mark.asyncio
+async def test_ensure_control_room_creates_private_control_room(monkeypatch) -> None:
+    client = FakeClient()
+    config = {
+        "matrix_rooms": [],
+        "meshtastic_portals": {
+            "enabled": True,
+            "control": {
+                "enabled": True,
+                "users": ["@nikolya:example.org"],
+                "send_welcome_on_start": True,
+            },
+        },
+    }
+    monkeypatch.setattr(facade, "config", config)
+    monkeypatch.setattr(facade, "bot_user_id", "@meshtasticbot:example.org")
+    monkeypatch.setattr(facade, "join_matrix_room", AsyncMock())
+
+    room_id = await ensure_control_room(client, config)
+
+    assert room_id == "!room1:example.org"
+    assert config["matrix_rooms"] == [
+        {
+            "id": "!room1:example.org",
+            "meshtastic_portal_type": "control",
+        }
+    ]
+    assert client.created[0]["name"] == "Meshtastic bot"
+    assert client.created[0]["is_direct"] is True
+    assert client.created[0]["invite"] == ["@nikolya:example.org"]
+    assert client.sent[0][0] == "!room1:example.org"
+    assert "help" in client.sent[0][1]["body"]
 
 
 @pytest.mark.asyncio

@@ -337,9 +337,18 @@ from mmrelay.matrix.room_mapping import (
 from mmrelay.matrix.portals import (
     discover_channels,
     ensure_channel_rooms,
+    ensure_control_room,
     ensure_dm_room,
     ensure_portal_space,
     portals_enabled,
+)
+from mmrelay.matrix.control import (
+    commands_allowed_in_portal_rooms,
+    control_enabled,
+    control_users,
+    handle_control_room_message,
+    is_authorized_control_user,
+    is_control_room,
 )
 from mmrelay.matrix.prefixes import (
     _add_truncated_vars,
