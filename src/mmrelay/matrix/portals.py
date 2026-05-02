@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from nio import RoomVisibility
+
 import mmrelay.matrix_utils as facade
 
 DEFAULT_PORTAL_ALIAS_PREFIX = "meshtastic"
@@ -79,7 +81,7 @@ async def _create_room(
     kwargs: dict[str, Any] = {
         "name": name,
         "topic": topic,
-        "visibility": "private",
+        "visibility": RoomVisibility.private,
         "alias": alias_localpart,
         "is_direct": is_direct,
     }
@@ -92,6 +94,7 @@ async def _create_room(
         # Older matrix-nio used Matrix API names, while newer releases expose
         # friendlier keyword arguments (`alias`, `space`). Keep both working.
         legacy_kwargs = dict(kwargs)
+        legacy_kwargs["visibility"] = "private"
         legacy_kwargs["room_alias_name"] = legacy_kwargs.pop("alias")
         if legacy_kwargs.pop("space", False):
             legacy_kwargs["creation_content"] = {"type": "m.space"}
