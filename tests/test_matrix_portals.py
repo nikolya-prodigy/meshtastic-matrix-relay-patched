@@ -81,7 +81,7 @@ async def test_ensure_channel_rooms_creates_space_and_channel_rooms(monkeypatch)
             "meshtastic_channel_name": "LongFast",
         }
     ]
-    assert client.created[0]["creation_content"] == {"type": "m.space"}
+    assert client.created[0]["space"] is True
     assert client.created[1]["name"] == "#0 LongFast"
     assert client.children == [("!room1:example.org", "!room2:example.org")]
 

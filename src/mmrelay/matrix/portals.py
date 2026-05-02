@@ -80,17 +80,23 @@ async def _create_room(
         "name": name,
         "topic": topic,
         "visibility": "private",
-        "room_alias_name": alias_localpart,
+        "alias": alias_localpart,
         "is_direct": is_direct,
     }
     if is_space:
-        kwargs["creation_content"] = {"type": "m.space"}
+        kwargs["space"] = True
 
     try:
         response = await client.room_create(**kwargs)
     except TypeError:
-        kwargs.pop("is_direct", None)
-        response = await client.room_create(**kwargs)
+        # Older matrix-nio used Matrix API names, while newer releases expose
+        # friendlier keyword arguments (`alias`, `space`). Keep both working.
+        legacy_kwargs = dict(kwargs)
+        legacy_kwargs["room_alias_name"] = legacy_kwargs.pop("alias")
+        if legacy_kwargs.pop("space", False):
+            legacy_kwargs["creation_content"] = {"type": "m.space"}
+        legacy_kwargs.pop("is_direct", None)
+        response = await client.room_create(**legacy_kwargs)
     except Exception:  # noqa: BLE001 - keep startup resilient
         facade.logger.exception("Failed to create Matrix room %s", name)
         return None
