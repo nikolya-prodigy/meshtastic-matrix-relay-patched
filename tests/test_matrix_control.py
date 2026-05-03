@@ -21,7 +21,7 @@ def _event(body: str) -> SimpleNamespace:
 
 
 def _interface() -> SimpleNamespace:
-    return SimpleNamespace(
+    interface = SimpleNamespace(
         sendText=MagicMock(),
         nodes={
             "old": {
@@ -47,6 +47,16 @@ def _interface() -> SimpleNamespace:
             },
         }
     )
+    interface.getMyNodeInfo = MagicMock(
+        return_value={
+            "user": {
+                "shortName": "NICK",
+                "longName": "Relay Node",
+                "hwModel": "HELTEC_V4",
+            }
+        }
+    )
+    return interface
 
 
 def _capture_messages(monkeypatch) -> list[str]:
@@ -164,3 +174,93 @@ async def test_node_command_requires_cache(monkeypatch) -> None:
 
     assert handled is True
     assert sent == ["Node not found. Run `nodes` first, then use `node <number>`."]
+
+
+@pytest.mark.asyncio
+async def test_status_command_reports_bridge_summary(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    queue = MagicMock()
+    queue.get_status.return_value = {"queue_size": 2, "running": True}
+    monkeypatch.setattr(facade, "matrix_client", object())
+    monkeypatch.setattr(facade, "get_message_queue", MagicMock(return_value=queue))
+    monkeypatch.setattr(
+        facade,
+        "config",
+        {
+            "matrix_rooms": [
+                {"id": "!channel", "meshtastic_portal_type": "channel"},
+                {"id": "!dm", "meshtastic_portal_type": "dm"},
+                {"id": "!control", "meshtastic_portal_type": "control"},
+            ],
+            "meshtastic_portals": {
+                "control": {"users": ["@nikolya:example.org"]},
+            },
+        },
+    )
+
+    handled = await control.handle_control_room_message(_room(), _event("status"))
+
+    assert handled is True
+    assert "Meshtastic bridge status" in sent[-1]
+    assert "matrix: connected" in sent[-1]
+    assert "meshtastic: connected" in sent[-1]
+    assert "node: NICK / Relay Node / HELTEC_V4" in sent[-1]
+    assert "nodes: 2" in sent[-1]
+    assert "rooms: 3 total, 1 channels, 1 dm, 1 control" in sent[-1]
+    assert "queue: 2, running: true" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_refresh_command_updates_managed_rooms(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    client = object()
+    interface = _interface()
+    ensure_bot_avatar = AsyncMock()
+    ensure_channel_rooms = AsyncMock()
+    ensure_control_room = AsyncMock()
+    ensure_dm_room = AsyncMock(return_value="!dm")
+    monkeypatch.setattr(facade, "matrix_client", client)
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+    monkeypatch.setattr(facade, "ensure_bot_avatar", ensure_bot_avatar)
+    monkeypatch.setattr(facade, "ensure_channel_rooms", ensure_channel_rooms)
+    monkeypatch.setattr(facade, "ensure_control_room", ensure_control_room)
+    monkeypatch.setattr(facade, "ensure_dm_room", ensure_dm_room)
+    monkeypatch.setattr(
+        facade,
+        "config",
+        {
+            "matrix_rooms": [
+                {
+                    "id": "!channel",
+                    "meshtastic_portal_type": "channel",
+                    "meshtastic_channel": 0,
+                },
+                {
+                    "id": "!dm",
+                    "meshtastic_portal_type": "dm",
+                    "meshtastic_destination": "!new",
+                    "meshtastic_channel": 0,
+                },
+                {"id": "!control", "meshtastic_portal_type": "control"},
+            ],
+            "meshtastic_portals": {
+                "control": {"users": ["@nikolya:example.org"]},
+            },
+        },
+    )
+
+    handled = await control.handle_control_room_message(_room(), _event("refresh"))
+
+    assert handled is True
+    ensure_bot_avatar.assert_awaited_once_with(client)
+    ensure_channel_rooms.assert_awaited_once_with(client, interface, facade.config)
+    ensure_control_room.assert_awaited_once_with(client, facade.config)
+    ensure_dm_room.assert_awaited_once_with(
+        client,
+        interface,
+        "!new",
+        channel=0,
+    )
+    assert "Refresh complete." in sent[-1]
+    assert "rooms: 3 -> 3" in sent[-1]
+    assert "dm refreshed: 1" in sent[-1]

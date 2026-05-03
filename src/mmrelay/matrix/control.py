@@ -27,7 +27,9 @@ node <number> - Show details for a node from the last nodes list
 dm <number> - Create or open a direct Matrix room for a node
 dm <number> <message> - Send a direct Meshtastic message to a node
 rooms - List Matrix rooms managed by this bridge
-resync - Create any missing channel rooms again
+status - Show bridge, node, room and queue status
+refresh - Refresh managed rooms, profiles and bot avatar
+resync - Alias for refresh
 map - Render a map of nodes with positions
 weather - Current weather for the mesh area
 hourly - Hourly weather forecast
@@ -258,6 +260,26 @@ def _cache_key(room: Any, event: Any) -> tuple[str, str]:
     return (str(getattr(room, "room_id", "")), str(getattr(event, "sender", "")))
 
 
+def _get_interface() -> Any:
+    interface = getattr(facade, "meshtastic_client", None)
+    if interface is None:
+        from mmrelay import meshtastic_utils
+
+        interface = getattr(meshtastic_utils, "meshtastic_client", None)
+    return interface
+
+
+def _get_matrix_rooms() -> list[dict[str, Any]]:
+    matrix_rooms = (
+        facade.config.get("matrix_rooms", []) if isinstance(facade.config, dict) else []
+    )
+    if isinstance(matrix_rooms, dict):
+        return [room for room in matrix_rooms.values() if isinstance(room, dict)]
+    if isinstance(matrix_rooms, list):
+        return [room for room in matrix_rooms if isinstance(room, dict)]
+    return []
+
+
 def _entry_brief(entry: NodeEntry) -> str:
     return (
         f"{entry.number}. {entry.title}\n"
@@ -270,11 +292,7 @@ def _entry_brief(entry: NodeEntry) -> str:
 
 
 async def _handle_nodes_command(room: Any, event: Any, args: str) -> bool:
-    interface = getattr(facade, "meshtastic_client", None)
-    if interface is None:
-        from mmrelay import meshtastic_utils
-
-        interface = getattr(meshtastic_utils, "meshtastic_client", None)
+    interface = _get_interface()
     if interface is None:
         await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
         return True
@@ -335,11 +353,7 @@ async def _handle_dm_command(room: Any, event: Any, args: str) -> bool:
         return True
 
     client = getattr(facade, "matrix_client", None)
-    interface = getattr(facade, "meshtastic_client", None)
-    if interface is None:
-        from mmrelay import meshtastic_utils
-
-        interface = getattr(meshtastic_utils, "meshtastic_client", None)
+    interface = _get_interface()
     if interface is None:
         await send_control_message(room.room_id, "Matrix or Meshtastic client is not ready.")
         return True
@@ -386,10 +400,8 @@ async def _handle_dm_command(room: Any, event: Any, args: str) -> bool:
 
 
 async def _handle_rooms_command(room: Any) -> bool:
-    matrix_rooms = (
-        facade.config.get("matrix_rooms", []) if isinstance(facade.config, dict) else []
-    )
-    if not isinstance(matrix_rooms, list) or not matrix_rooms:
+    matrix_rooms = _get_matrix_rooms()
+    if not matrix_rooms:
         await send_control_message(
             room.room_id,
             "No Matrix rooms are currently managed by the bridge.",
@@ -420,25 +432,147 @@ async def _handle_rooms_command(room: Any) -> bool:
     return True
 
 
-async def _handle_resync_command(room: Any) -> bool:
-    client = getattr(facade, "matrix_client", None)
-    interface = getattr(facade, "meshtastic_client", None)
-    if interface is None:
-        from mmrelay import meshtastic_utils
+def _room_type_counts(matrix_rooms: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"channel": 0, "dm": 0, "control": 0, "other": 0}
+    for room_config in matrix_rooms:
+        room_type = room_config.get("meshtastic_portal_type", "channel")
+        if room_type in counts:
+            counts[room_type] += 1
+        else:
+            counts["other"] += 1
+    return counts
 
-        interface = getattr(meshtastic_utils, "meshtastic_client", None)
+
+def _local_node_title(interface: Any) -> str:
+    if interface is None:
+        return "?"
+    try:
+        info = interface.getMyNodeInfo()
+    except Exception:  # noqa: BLE001
+        info = None
+    if isinstance(info, dict):
+        user = info.get("user")
+        if isinstance(user, dict):
+            short_name = str(user.get("shortName") or "").strip()
+            long_name = str(user.get("longName") or "").strip()
+            hw_model = str(user.get("hwModel") or "").strip()
+            names = " / ".join(part for part in (short_name, long_name) if part)
+            return " / ".join(part for part in (names, hw_model) if part) or "?"
+
+    my_info = getattr(interface, "myInfo", None)
+    node_num = getattr(my_info, "my_node_num", None)
+    if node_num is not None:
+        node_key = f"!{node_num:x}" if isinstance(node_num, int) else str(node_num)
+        return _get_node_title_from_interface(interface, node_key) or node_key
+    return "?"
+
+
+def _get_node_title_from_interface(interface: Any, node_id: str) -> str | None:
+    nodes = getattr(interface, "nodes", None)
+    if not isinstance(nodes, dict):
+        return None
+    candidates = [node_id]
+    if node_id.startswith("!"):
+        candidates.append(node_id[1:])
+    for candidate in candidates:
+        info = nodes.get(candidate)
+        if not isinstance(info, dict):
+            continue
+        user = info.get("user")
+        if not isinstance(user, dict):
+            continue
+        short_name = str(user.get("shortName") or "").strip()
+        long_name = str(user.get("longName") or "").strip()
+        if short_name and long_name and short_name != long_name:
+            return f"{short_name} {long_name}"
+        return short_name or long_name or None
+    return None
+
+
+def _queue_summary() -> tuple[str, str]:
+    try:
+        queue = facade.get_message_queue()
+        status = queue.get_status()
+    except Exception:  # noqa: BLE001
+        return "?", "?"
+    queue_size = status.get("queue_size", "?") if isinstance(status, dict) else "?"
+    running = status.get("running", "?") if isinstance(status, dict) else "?"
+    return str(queue_size), str(running).lower()
+
+
+async def _handle_status_command(room: Any) -> bool:
+    client = getattr(facade, "matrix_client", None)
+    interface = _get_interface()
+    matrix_rooms = _get_matrix_rooms()
+    room_counts = _room_type_counts(matrix_rooms)
+    nodes = getattr(interface, "nodes", None)
+    node_count = len(nodes) if isinstance(nodes, dict) else 0
+    queue_size, queue_running = _queue_summary()
+
+    lines = [
+        "Meshtastic bridge status",
+        "",
+        f"matrix: {'connected' if client is not None else 'not connected'}",
+        f"meshtastic: {'connected' if interface is not None else 'not connected'}",
+        f"node: {_local_node_title(interface)}",
+        f"nodes: {node_count}",
+        (
+            "rooms: "
+            f"{len(matrix_rooms)} total, "
+            f"{room_counts['channel']} channels, "
+            f"{room_counts['dm']} dm, "
+            f"{room_counts['control']} control"
+        ),
+        f"queue: {queue_size}, running: {queue_running}",
+    ]
+    await send_control_message(room.room_id, "\n".join(lines))
+    return True
+
+
+async def _handle_refresh_command(room: Any) -> bool:
+    client = getattr(facade, "matrix_client", None)
+    interface = _get_interface()
     if client is None or interface is None:
         await send_control_message(room.room_id, "Matrix or Meshtastic client is not ready.")
         return True
     if not isinstance(facade.config, dict):
         await send_control_message(room.room_id, "Bridge config is not ready.")
         return True
-    before = len(facade.config.get("matrix_rooms", []))
+    before_rooms = _get_matrix_rooms()
+    before = len(before_rooms)
+    before_counts = _room_type_counts(before_rooms)
+
+    await facade.ensure_bot_avatar(client)
     await facade.ensure_channel_rooms(client, interface, facade.config)
-    after = len(facade.config.get("matrix_rooms", []))
+    await facade.ensure_control_room(client, facade.config)
+
+    refreshed_dm = 0
+    for room_config in list(_get_matrix_rooms()):
+        if room_config.get("meshtastic_portal_type") != "dm":
+            continue
+        destination = room_config.get("meshtastic_destination")
+        if destination in (None, ""):
+            continue
+        await facade.ensure_dm_room(
+            client,
+            interface,
+            destination,
+            channel=room_config.get("meshtastic_channel"),
+        )
+        refreshed_dm += 1
+
+    after_rooms = _get_matrix_rooms()
+    after = len(after_rooms)
+    after_counts = _room_type_counts(after_rooms)
     await send_control_message(
         room.room_id,
-        f"Resync complete. Managed rooms: {before} -> {after}.",
+        (
+            "Refresh complete.\n"
+            f"rooms: {before} -> {after}\n"
+            f"channels: {before_counts['channel']} -> {after_counts['channel']}\n"
+            f"dm refreshed: {refreshed_dm}\n"
+            f"control rooms: {after_counts['control']}"
+        ),
     )
     return True
 
@@ -508,8 +642,10 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
         return await _handle_dm_command(room, event, args)
     if command.casefold() == "rooms":
         return await _handle_rooms_command(room)
-    if command.casefold() == "resync":
-        return await _handle_resync_command(room)
+    if command.casefold() == "status":
+        return await _handle_status_command(room)
+    if command.casefold() in {"refresh", "resync"}:
+        return await _handle_refresh_command(room)
 
     from mmrelay.plugin_loader import load_plugins
 
