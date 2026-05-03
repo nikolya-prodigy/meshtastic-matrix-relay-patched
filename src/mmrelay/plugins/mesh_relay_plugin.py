@@ -133,9 +133,17 @@ class Plugin(BasePlugin):
 
         return [room for room in iterable_rooms if isinstance(room, dict)]
 
-    @staticmethod
-    def _is_channel_relay_room(room_config: dict[str, Any]) -> bool:
+    def _portals_enabled(self) -> bool:
+        global_config = config
+        if global_config is None:
+            return False
+        portals = global_config.get("meshtastic_portals")
+        return isinstance(portals, dict) and bool(portals.get("enabled"))
+
+    def _is_channel_relay_room(self, room_config: dict[str, Any]) -> bool:
         portal_type = room_config.get("meshtastic_portal_type")
+        if self._portals_enabled():
+            return portal_type == "channel"
         return portal_type in (None, "", "channel")
 
     async def handle_meshtastic_message(

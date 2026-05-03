@@ -42,11 +42,66 @@ def _get_iterable_matrix_rooms() -> Iterable[Any]:
     )
 
 
+def _portals_enabled() -> bool:
+    portals = (
+        facade.config.get("meshtastic_portals")
+        if isinstance(facade.config, dict)
+        else None
+    )
+    return isinstance(portals, dict) and bool(portals.get("enabled"))
+
+
 def _is_channel_relay_room(room: Any) -> bool:
     if not isinstance(room, dict):
         return False
     portal_type = room.get("meshtastic_portal_type")
+    if _portals_enabled():
+        return portal_type == "channel"
     return portal_type in (None, "", "channel")
+
+
+def _packet_link_details(packet: dict[str, Any]) -> str:
+    parts: list[str] = []
+    snr = packet.get("rxSnr")
+    if snr is not None:
+        try:
+            parts.append(f"snr: {float(snr):.1f} dB")
+        except (TypeError, ValueError):
+            parts.append(f"snr: {snr}")
+    rssi = packet.get("rxRssi")
+    if rssi is not None:
+        parts.append(f"rssi: {rssi}")
+
+    hop_start = packet.get("hopStart")
+    hop_limit = packet.get("hopLimit")
+    try:
+        hops_used = int(hop_start) - int(hop_limit)
+    except (TypeError, ValueError):
+        hops_used = None
+    if hops_used is not None and hops_used >= 0:
+        if hops_used == 0:
+            parts.append("hops: direct")
+        elif hops_used == 1:
+            parts.append("hops: 1")
+        else:
+            parts.append(f"hops: {hops_used}")
+
+    relay_node = packet.get("relayNode")
+    if relay_node not in (None, 0, "0"):
+        parts.append(f"via: {relay_node}")
+    return ", ".join(parts)
+
+
+def _format_portal_channel_message(
+    text: str,
+    shortname: str,
+    longname: str,
+    packet: dict[str, Any],
+) -> str:
+    name = shortname or longname
+    body = f"{name}: {text}" if name else text
+    details = _packet_link_details(packet)
+    return f"{body}\n\nlink: {details}" if details else body
 
 
 def _signal_startup_drain_complete() -> None:
@@ -978,6 +1033,11 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
 
         prefix = get_matrix_prefix(facade.config, longname, shortname, meshnet_name)
         formatted_message = f"{prefix}{text}"
+        channel_message = (
+            _format_portal_channel_message(text, shortname, longname, packet)
+            if _portals_enabled()
+            else formatted_message
+        )
 
         # Plugin functionality - Check if any plugin handles this message before relaying
         found_matching_plugin = facade._run_meshtastic_plugins(
@@ -1092,7 +1152,7 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
                     facade._fire_and_forget(
                         matrix_relay(
                             room["id"],
-                            formatted_message,
+                            channel_message,
                             longname,
                             shortname,
                             meshnet_name,

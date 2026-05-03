@@ -401,6 +401,42 @@ class TestMeshRelayPlugin(unittest.TestCase):
 
     @patch("mmrelay.plugins.mesh_relay_plugin.config")
     @patch("mmrelay.matrix_utils.connect_matrix")
+    def test_handle_meshtastic_message_portals_mode_requires_channel_type(
+        self, mock_connect, mock_config
+    ):
+        """Bot-managed mode ignores legacy channel rooms without explicit type."""
+        mock_matrix_client = MagicMock()
+        mock_matrix_client.room_send = AsyncMock()
+        mock_connect.return_value = mock_matrix_client
+
+        def _config_get(key, default=None):
+            if key == "meshtastic_portals":
+                return {"enabled": True}
+            if key == "matrix_rooms":
+                return [{"meshtastic_channel": 0, "id": TEST_ROOM_ID_1}]
+            return default
+
+        mock_config.get.side_effect = _config_get
+
+        packet = {
+            "decoded": {"portnum": TEXT_MESSAGE_APP, "text": "test"},
+            "channel": 0,
+        }
+
+        async def run_test():
+            result = await self.plugin.handle_meshtastic_message(
+                packet, "formatted_message", "longname", "meshnet_name"
+            )
+
+            self.assertFalse(result)
+            mock_matrix_client.room_send.assert_not_called()
+
+        import asyncio
+
+        asyncio.run(run_test())
+
+    @patch("mmrelay.plugins.mesh_relay_plugin.config")
+    @patch("mmrelay.matrix_utils.connect_matrix")
     def test_handle_meshtastic_message_no_channel_field(
         self, mock_connect, mock_config
     ):

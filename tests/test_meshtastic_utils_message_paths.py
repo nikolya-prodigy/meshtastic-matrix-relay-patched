@@ -299,6 +299,39 @@ def test_on_meshtastic_message_channel_relay_ignores_only_dm_room():
 
 
 @pytest.mark.usefixtures("reset_meshtastic_globals")
+def test_on_meshtastic_message_portals_mode_requires_channel_room_type():
+    config = _base_config()
+    config["meshtastic_portals"] = {"enabled": True}
+    _set_globals(config)
+    packet = _base_packet()
+
+    with _patch_message_deps(patch_logger=False) as (_mock_logger, mock_relay):
+        on_meshtastic_message(packet, _make_interface())
+
+    assert mock_relay is not None
+    mock_relay.assert_not_called()
+
+
+@pytest.mark.usefixtures("reset_meshtastic_globals")
+def test_on_meshtastic_message_portals_mode_formats_channel_message():
+    config = _base_config()
+    config["meshtastic_portals"] = {"enabled": True}
+    config["matrix_rooms"][0]["meshtastic_portal_type"] = "channel"
+    _set_globals(config)
+    packet = _base_packet()
+    packet.update({"rxSnr": -7.25, "rxRssi": -89, "hopStart": 3, "hopLimit": 1})
+
+    with _patch_message_deps(patch_logger=False) as (_mock_logger, mock_relay):
+        on_meshtastic_message(packet, _make_interface())
+
+    assert mock_relay is not None
+    mock_relay.assert_awaited_once()
+    assert mock_relay.await_args.args[1] == (
+        "Short: Hello\n\nlink: snr: -7.2 dB, rssi: -89, hops: 2"
+    )
+
+
+@pytest.mark.usefixtures("reset_meshtastic_globals")
 def test_on_meshtastic_message_unknown_portnum_plugin_only():
     config = _base_config()
     _set_globals(config)
