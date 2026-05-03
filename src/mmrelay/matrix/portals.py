@@ -7,11 +7,18 @@ import io
 import mimetypes
 import re
 import urllib.request
+from datetime import datetime
 from typing import Any
 
 from nio import RoomVisibility
 
 import mmrelay.matrix_utils as facade
+
+try:
+    from meshtastic.protobuf import channel_pb2, config_pb2
+except Exception:  # noqa: BLE001 - protobuf imports are optional in tests/build tools
+    channel_pb2 = None
+    config_pb2 = None
 
 DEFAULT_PORTAL_ALIAS_PREFIX = "meshtastic"
 DEFAULT_SPACE_NAME = "Meshtastic"
@@ -382,6 +389,67 @@ def _channel_name_from_object(channel: Any, index: int) -> str | None:
     return None
 
 
+def _object_value(obj: Any, *path: str) -> Any:
+    value = obj
+    for part in path:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            value = value.get(part)
+        else:
+            value = getattr(value, part, None)
+    return value
+
+
+def _string_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return "configured" if any(value) else None
+    text = str(value).strip()
+    if not text or text in {"0", "UNKNOWN", "Channel.Role.DISABLED"}:
+        return None
+    return text.rsplit(".", 1)[-1]
+
+
+def _enum_value(enum_type: Any, value: Any) -> str | None:
+    if enum_type is None or isinstance(value, bool):
+        return None
+    try:
+        name = enum_type.Name(int(value))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return None if name == "DISABLED" else name
+
+
+def _bool_value(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return None
+
+
+def _channel_details_from_object(channel: Any) -> dict[str, str]:
+    settings = _object_value(channel, "settings")
+    role_enum = channel_pb2.Channel.Role if channel_pb2 is not None else None
+    modem_enum = (
+        config_pb2.Config.LoRaConfig.ModemPreset if config_pb2 is not None else None
+    )
+    details: dict[str, str] = {}
+    for label, value in (
+        ("role", _object_value(channel, "role")),
+        ("modem", _object_value(settings, "modem_preset")),
+        ("uplink", _object_value(settings, "uplink_enabled")),
+        ("downlink", _object_value(settings, "downlink_enabled")),
+    ):
+        enum_type = role_enum if label == "role" else modem_enum if label == "modem" else None
+        rendered = _enum_value(enum_type, value) or _bool_value(value) or _string_value(value)
+        if rendered:
+            details[label] = rendered
+    if _string_value(_object_value(settings, "psk")):
+        details["psk"] = "configured"
+    return details
+
+
 def discover_channels(interface: Any, config: dict[str, Any] | None) -> list[dict[str, Any]]:
     cfg = _portal_config(config)
     channels_cfg = cfg.get("channels") if isinstance(cfg.get("channels"), dict) else {}
@@ -392,7 +460,7 @@ def discover_channels(interface: Any, config: dict[str, Any] | None) -> list[dic
         else "LongFast"
     )
 
-    discovered: dict[int, str] = {}
+    discovered: dict[int, dict[str, Any]] = {}
     local_node = getattr(interface, "localNode", None)
     raw_channels = getattr(local_node, "channels", None) or getattr(interface, "channels", None)
     if isinstance(raw_channels, dict):
@@ -413,10 +481,15 @@ def discover_channels(interface: Any, config: dict[str, Any] | None) -> list[dic
             continue
         name = _channel_name_from_object(channel, index)
         if name or include_empty:
-            discovered[index] = name or f"Channel {index}"
+            discovered[index] = {
+                "index": index,
+                "name": name or f"Channel {index}",
+                **_channel_details_from_object(channel),
+            }
 
     rooms = config.get("matrix_rooms", []) if isinstance(config, dict) else []
-    for room in rooms if isinstance(rooms, list) else rooms.values():
+    room_iter = rooms if isinstance(rooms, list) else rooms.values() if isinstance(rooms, dict) else []
+    for room in room_iter:
         if not isinstance(room, dict):
             continue
         channel = room.get("meshtastic_channel")
@@ -425,14 +498,14 @@ def discover_channels(interface: Any, config: dict[str, Any] | None) -> list[dic
         except (TypeError, ValueError):
             continue
         if 0 <= index < MAX_MESHTASTIC_CHANNELS:
-            discovered.setdefault(index, f"Channel {index}")
+            discovered.setdefault(index, {"index": index, "name": f"Channel {index}"})
 
     if not discovered:
-        discovered[0] = str(fallback_name or "LongFast")
+        discovered[0] = {"index": 0, "name": str(fallback_name or "LongFast")}
 
     return [
-        {"index": index, "name": name}
-        for index, name in sorted(discovered.items(), key=lambda item: item[0])
+        channel
+        for _index, channel in sorted(discovered.items(), key=lambda item: item[0])
     ]
 
 
@@ -443,8 +516,88 @@ def _channel_room_name(index: int, name: str) -> str:
     return template.format(index=index, name=name)
 
 
-def _channel_room_topic(index: int, name: str) -> str:
-    return f"Meshtastic channel #{index}: {name}"
+def _channel_room_topic(channel: dict[str, Any]) -> str:
+    index = channel["index"]
+    name = channel["name"]
+    lines = [f"Meshtastic channel #{index}: {name}"]
+    for key in ("role", "modem", "uplink", "downlink", "psk"):
+        value = channel.get(key)
+        if value:
+            lines.append(f"{key}: {value}")
+    return "\n".join(lines)
+
+
+def _node_info(interface: Any, node_key: str) -> dict[str, Any]:
+    nodes = getattr(interface, "nodes", None)
+    if not isinstance(nodes, dict):
+        return {}
+    candidates = [node_key]
+    if node_key.startswith("!"):
+        candidates.append(node_key[1:])
+    else:
+        candidates.append(f"!{node_key}")
+    for candidate in candidates:
+        info = nodes.get(candidate)
+        if isinstance(info, dict):
+            return info
+    return {}
+
+
+def _relative_node_time(timestamp: Any) -> str | None:
+    try:
+        seconds = float(timestamp)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if seconds <= 0:
+        return None
+    delta = int((datetime.now() - datetime.fromtimestamp(seconds)).total_seconds())
+    if delta <= 0:
+        return "just now"
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        minutes = delta // 60
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    if delta < 86400:
+        hours = delta // 3600
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = delta // 86400
+    return f"{days} day{'s' if days != 1 else ''} ago"
+
+
+def _format_dm_topic(display_name: str, node_key: str, interface: Any) -> str:
+    lines = [f"Meshtastic direct messages with {display_name} ({node_key})"]
+    info = _node_info(interface, node_key)
+    user = info.get("user") if isinstance(info.get("user"), dict) else {}
+    model = user.get("hwModel") if isinstance(user, dict) else None
+    if model:
+        lines.append(f"model: {model}")
+    metrics = info.get("deviceMetrics") if isinstance(info.get("deviceMetrics"), dict) else {}
+    battery = metrics.get("batteryLevel") if isinstance(metrics, dict) else None
+    voltage = metrics.get("voltage") if isinstance(metrics, dict) else None
+    if battery is not None or voltage is not None:
+        parts = []
+        if battery is not None:
+            parts.append(f"{battery}%")
+        if voltage is not None:
+            parts.append(f"{voltage}V")
+        lines.append(f"battery: {' '.join(parts)}")
+    link_parts = []
+    hops = info.get("hopsAway")
+    if hops == 0:
+        link_parts.append("direct")
+    elif hops == 1:
+        link_parts.append("1 hop away")
+    elif hops is not None:
+        link_parts.append(f"{hops} hops away")
+    if info.get("snr") is not None:
+        link_parts.append(f"snr: {info['snr']} dB")
+    if link_parts:
+        lines.append(f"link: {', '.join(link_parts)}")
+    last_heard = _relative_node_time(info.get("lastHeard"))
+    if last_heard:
+        lines.append(f"last: {last_heard}")
+    return "\n".join(lines)
 
 
 async def ensure_channel_rooms(client: Any, interface: Any, config: dict[str, Any]) -> None:
@@ -471,7 +624,7 @@ async def ensure_channel_rooms(client: Any, interface: Any, config: dict[str, An
         index = channel["index"]
         name = channel["name"]
         room_name = _channel_room_name(index, name)
-        room_topic = _channel_room_topic(index, name)
+        room_topic = _channel_room_topic(channel)
         if index in existing_channels and existing_channels[index].get("id"):
             existing_room = existing_channels[index]
             existing_room["meshtastic_portal_type"] = "channel"
@@ -591,6 +744,7 @@ async def ensure_dm_room(
     display_name = _get_node_display_name(node_key, interface, fallback=node_key)
     template = str(dm_cfg.get("name_template") or "DM {name}")
     room_name = template.format(name=display_name, node_id=node_key)
+    room_topic = _format_dm_topic(display_name, node_key, interface)
 
     matrix_rooms = facade.config.setdefault("matrix_rooms", [])
     if not isinstance(matrix_rooms, list):
@@ -604,7 +758,7 @@ async def ensure_dm_room(
                     client,
                     room_id,
                     name=room_name,
-                    topic=f"Meshtastic direct messages with {display_name} ({node_key})",
+                    topic=room_topic,
                 )
                 return room_id
             return room_id if isinstance(room_id, str) else None
@@ -613,7 +767,7 @@ async def ensure_dm_room(
     room_id = await _create_room(
         client,
         name=room_name,
-        topic=f"Meshtastic direct messages with {display_name} ({node_key})",
+        topic=room_topic,
         alias_localpart=_alias_localpart("dm", node_key),
         is_direct=True,
     )

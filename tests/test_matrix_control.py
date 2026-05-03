@@ -23,6 +23,19 @@ def _event(body: str) -> SimpleNamespace:
 def _interface() -> SimpleNamespace:
     interface = SimpleNamespace(
         sendText=MagicMock(),
+        localNode=SimpleNamespace(
+            channels=[
+                SimpleNamespace(
+                    role="PRIMARY",
+                    settings=SimpleNamespace(
+                        name="LongFast",
+                        modem_preset="LONG_FAST",
+                        psk=b"secret",
+                    ),
+                ),
+                SimpleNamespace(settings=SimpleNamespace(name="Anapa")),
+            ]
+        ),
         nodes={
             "old": {
                 "user": {
@@ -174,6 +187,71 @@ async def test_node_command_requires_cache(monkeypatch) -> None:
 
     assert handled is True
     assert sent == ["Node not found. Run `nodes` first, then use `node <number>`."]
+
+
+@pytest.mark.asyncio
+async def test_channels_command_lists_discovered_channels(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    monkeypatch.setattr(
+        facade,
+        "config",
+        {
+            "matrix_rooms": [
+                {
+                    "id": "!channel0:example.org",
+                    "meshtastic_portal_type": "channel",
+                    "meshtastic_channel": 0,
+                }
+            ],
+            "meshtastic_portals": {
+                "control": {"users": ["@nikolya:example.org"]},
+            },
+        },
+    )
+
+    handled = await control.handle_control_room_message(_room(), _event("channels"))
+
+    assert handled is True
+    assert "Meshtastic channels: 2" in sent[-1]
+    assert "#0 LongFast" in sent[-1]
+    assert "role: PRIMARY" in sent[-1]
+    assert "modem: LONG_FAST" in sent[-1]
+    assert "psk: configured" in sent[-1]
+    assert "room: !channel0:example.org" in sent[-1]
+    assert "#1 Anapa" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_channel_send_command_queues_channel_message(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    queue_message = MagicMock(return_value=True)
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+    monkeypatch.setattr(facade, "queue_message", queue_message)
+
+    handled = await control.handle_control_room_message(_room(), _event("ch 1 привет"))
+
+    assert handled is True
+    queue_message.assert_called_once_with(
+        interface.sendText,
+        text="привет",
+        channelIndex=1,
+        description="Control message to channel #1 Anapa",
+    )
+    assert "Queued message for channel #1 Anapa" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_channel_send_command_rejects_unknown_channel(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    queue_message = MagicMock(return_value=True)
+    monkeypatch.setattr(facade, "queue_message", queue_message)
+
+    handled = await control.handle_control_room_message(_room(), _event("send 7 hello"))
+
+    assert handled is True
+    queue_message.assert_not_called()
+    assert "Channel #7 is not known" in sent[-1]
 
 
 @pytest.mark.asyncio

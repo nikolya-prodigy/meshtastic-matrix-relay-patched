@@ -88,6 +88,37 @@ def test_discover_channels_from_local_node() -> None:
     ]
 
 
+def test_discover_channels_includes_safe_channel_details() -> None:
+    interface = SimpleNamespace(
+        localNode=SimpleNamespace(
+            channels=[
+                SimpleNamespace(
+                    role="PRIMARY",
+                    settings=SimpleNamespace(
+                        name="LongFast",
+                        modem_preset="LONG_FAST",
+                        uplink_enabled=True,
+                        downlink_enabled=False,
+                        psk=b"secret",
+                    ),
+                )
+            ]
+        )
+    )
+
+    assert discover_channels(interface, {}) == [
+        {
+            "index": 0,
+            "name": "LongFast",
+            "role": "PRIMARY",
+            "modem": "LONG_FAST",
+            "uplink": "yes",
+            "downlink": "no",
+            "psk": "configured",
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_ensure_channel_rooms_creates_space_and_channel_rooms(monkeypatch) -> None:
     client = FakeClient()
@@ -275,3 +306,38 @@ async def test_ensure_dm_room_creates_room_mapping(monkeypatch) -> None:
     ]
     assert client.created[1]["is_direct"] is True
     assert client.created[1]["name"] == "DM NOD"
+
+
+@pytest.mark.asyncio
+async def test_ensure_dm_room_uses_node_details_in_topic(monkeypatch) -> None:
+    client = FakeClient()
+    config = {
+        "matrix_rooms": [],
+        "meshtastic_portals": {"enabled": True},
+    }
+    interface = SimpleNamespace(
+        nodes={
+            "!abc": {
+                "user": {
+                    "shortName": "NOD",
+                    "longName": "Node",
+                    "hwModel": "HELTEC_V4",
+                },
+                "hopsAway": 1,
+                "snr": -7.5,
+                "deviceMetrics": {"batteryLevel": 95, "voltage": 4.1},
+            }
+        }
+    )
+    monkeypatch.setattr(facade, "config", config)
+    monkeypatch.setattr(facade, "bot_user_id", "@meshtasticbot:example.org")
+    monkeypatch.setattr(facade, "join_matrix_room", AsyncMock())
+
+    await ensure_dm_room(client, interface, "!abc")
+
+    assert client.created[1]["topic"] == (
+        "Meshtastic direct messages with NOD (!abc)\n"
+        "model: HELTEC_V4\n"
+        "battery: 95% 4.1V\n"
+        "link: 1 hop away, snr: -7.5 dB"
+    )

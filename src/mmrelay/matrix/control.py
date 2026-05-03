@@ -26,6 +26,9 @@ nodes [limit|all] - List known Meshtastic nodes
 node <number> - Show details for a node from the last nodes list
 dm <number> - Create or open a direct Matrix room for a node
 dm <number> <message> - Send a direct Meshtastic message to a node
+channels - List Meshtastic channels known to the bridge
+ch <channel> <message> - Send a message to a Meshtastic channel
+send <channel> <message> - Alias for ch
 rooms - List Matrix rooms managed by this bridge
 status - Show bridge, node, room and queue status
 refresh - Refresh managed rooms, profiles and bot avatar
@@ -280,6 +283,35 @@ def _get_matrix_rooms() -> list[dict[str, Any]]:
     return []
 
 
+def _channel_room_id(index: int) -> str | None:
+    for room_config in _get_matrix_rooms():
+        if room_config.get("meshtastic_portal_type") != "channel":
+            continue
+        try:
+            channel_index = int(room_config.get("meshtastic_channel"))
+        except (TypeError, ValueError):
+            continue
+        if channel_index == index and isinstance(room_config.get("id"), str):
+            return room_config["id"]
+    return None
+
+
+def _channel_brief(channel: dict[str, Any]) -> str:
+    index = channel["index"]
+    lines = [f"#{index} {channel['name']}"]
+    detail_parts = []
+    for key in ("role", "modem", "uplink", "downlink", "psk"):
+        value = channel.get(key)
+        if value:
+            detail_parts.append(f"{key}: {value}")
+    if detail_parts:
+        lines.append("   " + ", ".join(detail_parts))
+    room_id = _channel_room_id(index)
+    if room_id:
+        lines.append(f"   room: {room_id}")
+    return "\n".join(lines)
+
+
 def _entry_brief(entry: NodeEntry) -> str:
     return (
         f"{entry.number}. {entry.title}\n"
@@ -312,6 +344,79 @@ async def _handle_nodes_command(room: Any, event: Any, args: str) -> bool:
     await send_control_message(
         room.room_id,
         header + "\n\n" + "\n\n".join(_entry_brief(entry) for entry in shown),
+    )
+    return True
+
+
+async def _handle_channels_command(room: Any) -> bool:
+    interface = _get_interface()
+    if interface is None:
+        await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
+        return True
+
+    channels = facade.discover_channels(interface, facade.config)
+    if not channels:
+        await send_control_message(room.room_id, "No Meshtastic channels found.")
+        return True
+
+    lines = [f"Meshtastic channels: {len(channels)}"]
+    lines.extend(_channel_brief(channel) for channel in channels)
+    await send_control_message(room.room_id, "\n\n".join(lines))
+    return True
+
+
+def _parse_channel_message(args: str) -> tuple[int | None, str]:
+    channel_text, _separator, message = args.strip().partition(" ")
+    try:
+        channel_index = int(channel_text)
+    except ValueError:
+        return None, ""
+    return channel_index, message.strip()
+
+
+async def _handle_channel_send_command(room: Any, args: str) -> bool:
+    interface = _get_interface()
+    if interface is None:
+        await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
+        return True
+
+    channel_index, message = _parse_channel_message(args)
+    if channel_index is None or not message:
+        await send_control_message(
+            room.room_id,
+            "Usage: ch <channel> <message>\nRun `channels` to see channel numbers.",
+        )
+        return True
+
+    channels = facade.discover_channels(interface, facade.config)
+    channel = next(
+        (item for item in channels if int(item.get("index", -1)) == channel_index),
+        None,
+    )
+    if channel is None:
+        await send_control_message(
+            room.room_id,
+            f"Channel #{channel_index} is not known. Run `channels` to see available channels.",
+        )
+        return True
+
+    message = facade.truncate_message(message)
+    success = facade.queue_message(
+        interface.sendText,
+        text=message,
+        channelIndex=channel_index,
+        description=f"Control message to channel #{channel_index} {channel['name']}",
+    )
+    if not success:
+        await send_control_message(
+            room.room_id,
+            f"Failed to queue message for channel #{channel_index} {channel['name']}.",
+        )
+        return True
+
+    await send_control_message(
+        room.room_id,
+        f"Queued message for channel #{channel_index} {channel['name']}.",
     )
     return True
 
@@ -640,6 +745,10 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
         return await _handle_node_command(room, event, args)
     if command.casefold() == "dm":
         return await _handle_dm_command(room, event, args)
+    if command.casefold() == "channels":
+        return await _handle_channels_command(room)
+    if command.casefold() in {"ch", "send"}:
+        return await _handle_channel_send_command(room, args)
     if command.casefold() == "rooms":
         return await _handle_rooms_command(room)
     if command.casefold() == "status":
