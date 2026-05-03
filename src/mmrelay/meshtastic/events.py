@@ -62,16 +62,6 @@ def _is_channel_relay_room(room: Any) -> bool:
 
 def _packet_link_details(packet: dict[str, Any]) -> str:
     parts: list[str] = []
-    snr = packet.get("rxSnr")
-    if snr is not None:
-        try:
-            parts.append(f"snr: {float(snr):.1f} dB")
-        except (TypeError, ValueError):
-            parts.append(f"snr: {snr}")
-    rssi = packet.get("rxRssi")
-    if rssi is not None:
-        parts.append(f"rssi: {rssi}")
-
     hop_start = packet.get("hopStart")
     hop_limit = packet.get("hopLimit")
     try:
@@ -80,15 +70,25 @@ def _packet_link_details(packet: dict[str, Any]) -> str:
         hops_used = None
     if hops_used is not None and hops_used >= 0:
         if hops_used == 0:
-            parts.append("hops: direct")
+            parts.append("direct")
         elif hops_used == 1:
-            parts.append("hops: 1")
+            parts.append("1 hop")
         else:
-            parts.append(f"hops: {hops_used}")
+            parts.append(f"{hops_used} hops")
+
+    snr = packet.get("rxSnr")
+    if snr is not None:
+        try:
+            parts.append(f"snr {float(snr):.1f} dB")
+        except (TypeError, ValueError):
+            parts.append(f"snr {snr}")
+    rssi = packet.get("rxRssi")
+    if rssi is not None:
+        parts.append(f"rssi {rssi}")
 
     relay_node = packet.get("relayNode")
     if relay_node not in (None, 0, "0"):
-        parts.append(f"via: {relay_node}")
+        parts.append(f"via {relay_node}")
     return ", ".join(parts)
 
 

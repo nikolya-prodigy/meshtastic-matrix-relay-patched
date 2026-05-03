@@ -327,7 +327,7 @@ def test_on_meshtastic_message_portals_mode_formats_channel_message():
     assert mock_relay is not None
     mock_relay.assert_awaited_once()
     assert mock_relay.await_args.args[1] == (
-        "Short: Hello\n\nlink: snr: -7.2 dB, rssi: -89, hops: 2"
+        "Short: Hello\n\nlink: 2 hops, snr -7.2 dB, rssi -89"
     )
 
 
