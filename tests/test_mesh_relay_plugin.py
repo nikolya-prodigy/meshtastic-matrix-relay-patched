@@ -365,6 +365,42 @@ class TestMeshRelayPlugin(unittest.TestCase):
 
     @patch("mmrelay.plugins.mesh_relay_plugin.config")
     @patch("mmrelay.matrix_utils.connect_matrix")
+    def test_handle_meshtastic_message_skips_dm_rooms(self, mock_connect, mock_config):
+        """Broadcast channel relay must not target bot-managed DM rooms."""
+        mock_matrix_client = MagicMock()
+        mock_matrix_client.room_send = AsyncMock()
+        mock_connect.return_value = mock_matrix_client
+
+        mock_config.get.return_value = [
+            {
+                "meshtastic_channel": 0,
+                "id": "!dm:test",
+                "meshtastic_portal_type": "dm",
+            },
+            {"meshtastic_channel": 0, "id": TEST_ROOM_ID_1},
+        ]
+
+        packet = {
+            "decoded": {"portnum": TEXT_MESSAGE_APP, "text": "test"},
+            "channel": 0,
+        }
+
+        async def run_test():
+            result = await self.plugin.handle_meshtastic_message(
+                packet, "formatted_message", "longname", "meshnet_name"
+            )
+
+            self.assertTrue(result)
+            mock_matrix_client.room_send.assert_called_once()
+            call_args = mock_matrix_client.room_send.call_args
+            self.assertEqual(call_args.kwargs["room_id"], TEST_ROOM_ID_1)
+
+        import asyncio
+
+        asyncio.run(run_test())
+
+    @patch("mmrelay.plugins.mesh_relay_plugin.config")
+    @patch("mmrelay.matrix_utils.connect_matrix")
     def test_handle_meshtastic_message_no_channel_field(
         self, mock_connect, mock_config
     ):

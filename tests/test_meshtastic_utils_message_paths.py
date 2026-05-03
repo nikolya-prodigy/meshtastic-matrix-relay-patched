@@ -256,6 +256,49 @@ def test_on_meshtastic_message_channel_fallback_numeric_portnum():
 
 
 @pytest.mark.usefixtures("reset_meshtastic_globals")
+def test_on_meshtastic_message_channel_relay_skips_dm_rooms():
+    config = _base_config()
+    config["matrix_rooms"].append(
+        {
+            "id": "!dm:test",
+            "meshtastic_channel": 0,
+            "meshtastic_portal_type": "dm",
+            "meshtastic_destination": "!node123",
+        }
+    )
+    _set_globals(config)
+    packet = _base_packet()
+
+    with _patch_message_deps(patch_logger=False) as (_mock_logger, mock_relay):
+        on_meshtastic_message(packet, _make_interface())
+
+    assert mock_relay is not None
+    mock_relay.assert_awaited_once()
+    assert mock_relay.await_args.args[0] == "!room:test"
+
+
+@pytest.mark.usefixtures("reset_meshtastic_globals")
+def test_on_meshtastic_message_channel_relay_ignores_only_dm_room():
+    config = _base_config()
+    config["matrix_rooms"] = [
+        {
+            "id": "!dm:test",
+            "meshtastic_channel": 0,
+            "meshtastic_portal_type": "dm",
+            "meshtastic_destination": "!node123",
+        }
+    ]
+    _set_globals(config)
+    packet = _base_packet()
+
+    with _patch_message_deps(patch_logger=False) as (_mock_logger, mock_relay):
+        on_meshtastic_message(packet, _make_interface())
+
+    assert mock_relay is not None
+    mock_relay.assert_not_called()
+
+
+@pytest.mark.usefixtures("reset_meshtastic_globals")
 def test_on_meshtastic_message_unknown_portnum_plugin_only():
     config = _base_config()
     _set_globals(config)

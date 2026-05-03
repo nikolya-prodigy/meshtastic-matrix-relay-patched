@@ -42,6 +42,13 @@ def _get_iterable_matrix_rooms() -> Iterable[Any]:
     )
 
 
+def _is_channel_relay_room(room: Any) -> bool:
+    if not isinstance(room, dict):
+        return False
+    portal_type = room.get("meshtastic_portal_type")
+    return portal_type in (None, "", "channel")
+
+
 def _signal_startup_drain_complete() -> None:
     startup_drain_complete_event = facade.get_startup_drain_complete_event()
     if startup_drain_complete_event is not None:
@@ -917,7 +924,7 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
 
                 if not skip_matrix_relay:
                     for room in iterable_rooms:
-                        if not isinstance(room, dict):
+                        if not _is_channel_relay_room(room):
                             continue
                         room_channel = facade._normalize_room_channel(room)
                         if room_channel is None:
@@ -1056,10 +1063,11 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
         if not channel_mapped:
             available_channels = []
             for room in iterable_rooms:
-                if isinstance(room, dict):
-                    ch = facade._normalize_room_channel(room)
-                    if ch is not None:
-                        available_channels.append(ch)
+                if not _is_channel_relay_room(room):
+                    continue
+                ch = facade._normalize_room_channel(room)
+                if ch is not None:
+                    available_channels.append(ch)
 
             facade.logger.warning(
                 f"Skipping message from unmapped channel {channel}. "
@@ -1072,7 +1080,7 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
 
         iterable_rooms = _get_iterable_matrix_rooms()
         for room in iterable_rooms:
-            if not isinstance(room, dict):
+            if not _is_channel_relay_room(room):
                 continue
 
             room_channel = facade._normalize_room_channel(room)
