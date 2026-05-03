@@ -223,6 +223,29 @@ async def test_dm_command_accepts_short_name_without_cached_nodes(monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_ping_node_command_queues_direct_ping(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    queue_message = MagicMock(return_value=True)
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+    monkeypatch.setattr(facade, "queue_message", queue_message)
+
+    await control.handle_control_room_message(_room(), _event("nodes"))
+    handled = await control.handle_control_room_message(_room(), _event("ping-node 1"))
+
+    assert handled is True
+    queue_message.assert_called_once_with(
+        interface.sendText,
+        text="ping",
+        channelIndex=0,
+        destinationId="!new",
+        wantAck=True,
+        description="Ping node NEW New Node",
+    )
+    assert "Queued ping for NEW New Node" in sent[-1]
+
+
+@pytest.mark.asyncio
 async def test_node_command_requires_cache(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
 
@@ -413,3 +436,16 @@ async def test_refresh_command_updates_managed_rooms(monkeypatch) -> None:
     assert "Refresh complete." in sent[-1]
     assert "rooms: 3 -> 3" in sent[-1]
     assert "dm refreshed: 1" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_send_control_message_includes_html_body(monkeypatch) -> None:
+    client = SimpleNamespace(room_send=AsyncMock())
+    monkeypatch.setattr(facade, "matrix_client", client)
+
+    await control.send_control_message("!control", "1. <node>\nid: `!abc`")
+
+    content = client.room_send.await_args.kwargs["content"]
+    assert content["body"] == "1. <node>\nid: `!abc`"
+    assert content["format"] == "org.matrix.custom.html"
+    assert content["formatted_body"] == "1. &lt;node&gt;<br>id: `!abc`"

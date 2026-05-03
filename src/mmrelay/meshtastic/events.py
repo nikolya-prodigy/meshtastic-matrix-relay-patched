@@ -104,6 +104,45 @@ def _format_portal_channel_message(
     return f"{body}\n\nlink: {details}" if details else body
 
 
+def _refresh_existing_dm_room(
+    interface: Any,
+    sender: Any,
+    channel: int | None,
+    loop: Any,
+) -> None:
+    if sender in (None, "") or not _portals_enabled():
+        return
+
+    from mmrelay import matrix_utils as matrix_facade
+
+    matrix_client = matrix_facade.matrix_client
+    if matrix_client is None:
+        return
+
+    try:
+        future = matrix_facade.asyncio.run_coroutine_threadsafe(
+            matrix_facade.ensure_dm_room(
+                matrix_client,
+                interface,
+                sender,
+                channel=channel,
+                create=False,
+            ),
+            loop,
+        )
+    except Exception:
+        facade.logger.debug("Failed to schedule existing DM room refresh", exc_info=True)
+        return
+
+    def _log_failure(done: Any) -> None:
+        try:
+            done.result()
+        except Exception:
+            facade.logger.debug("Failed to refresh existing DM room", exc_info=True)
+
+    future.add_done_callback(_log_failure)
+
+
 def _signal_startup_drain_complete() -> None:
     startup_drain_complete_event = facade.get_startup_drain_complete_event()
     if startup_drain_complete_event is not None:
@@ -1038,6 +1077,8 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
             if _portals_enabled()
             else formatted_message
         )
+
+        _refresh_existing_dm_room(interface, sender, channel, loop)
 
         # Plugin functionality - Check if any plugin handles this message before relaying
         found_matching_plugin = facade._run_meshtastic_plugins(

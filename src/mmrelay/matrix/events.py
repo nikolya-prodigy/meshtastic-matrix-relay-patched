@@ -50,6 +50,35 @@ def _meshtastic_destination_kwargs(room_config: dict[str, Any]) -> dict[str, Any
     return kwargs
 
 
+def _portal_access_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    portals = config.get("meshtastic_portals") if isinstance(config, dict) else None
+    access = portals.get("access") if isinstance(portals, dict) else None
+    return access if isinstance(access, dict) else {}
+
+
+def _channel_writer_allowed(sender: str, config: dict[str, Any] | None) -> bool:
+    access = _portal_access_config(config)
+    if "channel_writers" not in access:
+        return True
+
+    writers = access.get("channel_writers")
+    if not isinstance(writers, list):
+        facade.logger.warning(
+            "Ignoring invalid meshtastic_portals.access.channel_writers value: %r",
+            writers,
+        )
+        return True
+    allowed = {writer for writer in writers if isinstance(writer, str)}
+    return sender in allowed
+
+
+def _is_channel_portal_room(room_config: Any) -> bool:
+    return (
+        isinstance(room_config, dict)
+        and room_config.get("meshtastic_portal_type") == "channel"
+    )
+
+
 async def on_decryption_failure(room: MatrixRoom, event: MegolmEvent) -> None:
     """
     Handle a MegolmEvent that could not be decrypted by requesting missing session keys with exponential backoff retry.
@@ -339,6 +368,17 @@ async def on_room_message(
 
     if facade.is_control_room(room_config):
         await facade.handle_control_room_message(room, event)
+        return
+
+    if _is_channel_portal_room(room_config) and not _channel_writer_allowed(
+        event.sender,
+        facade.config,
+    ):
+        facade.logger.info(
+            "Ignoring Matrix message from %s in read-only Meshtastic channel room %s",
+            event.sender,
+            room.room_id,
+        )
         return
 
     if is_reaction and not interactions["reactions"]:

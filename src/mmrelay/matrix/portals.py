@@ -732,11 +732,10 @@ async def ensure_dm_room(
     interface: Any,
     node_id: Any,
     channel: int | None = None,
+    create: bool = True,
 ) -> str | None:
     cfg = _portal_config(facade.config)
     dm_cfg = cfg.get("direct_messages") if isinstance(cfg.get("direct_messages"), dict) else {}
-    if dm_cfg.get("auto_create", True) is False:
-        return None
 
     from mmrelay.meshtastic.messaging import _get_node_display_name
 
@@ -762,6 +761,9 @@ async def ensure_dm_room(
                 )
                 return room_id
             return room_id if isinstance(room_id, str) else None
+
+    if not create or dm_cfg.get("auto_create", True) is False:
+        return None
 
     space_id = await ensure_portal_space(client)
     room_id = await _create_room(

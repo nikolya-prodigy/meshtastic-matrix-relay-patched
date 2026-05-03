@@ -341,3 +341,42 @@ async def test_ensure_dm_room_uses_node_details_in_topic(monkeypatch) -> None:
         "battery: 95% 4.1V\n"
         "link: 1 hop away, snr: -7.5 dB"
     )
+
+
+@pytest.mark.asyncio
+async def test_ensure_dm_room_create_false_updates_existing_only(monkeypatch) -> None:
+    client = FakeClient()
+    config = {
+        "matrix_rooms": [
+            {
+                "id": "!existing:example.org",
+                "meshtastic_channel": 0,
+                "meshtastic_portal_type": "dm",
+                "meshtastic_destination": "!abc",
+                "meshtastic_node_name": "Old",
+            }
+        ],
+        "meshtastic_portals": {"enabled": True},
+    }
+    interface = SimpleNamespace(
+        nodes={
+            "!abc": {
+                "user": {"shortName": "NEW", "longName": "New Node"},
+                "lastHeard": 100,
+            },
+            "!missing": {
+                "user": {"shortName": "MIS", "longName": "Missing Node"},
+            },
+        }
+    )
+    monkeypatch.setattr(facade, "config", config)
+    monkeypatch.setattr(facade, "bot_user_id", "@meshtasticbot:example.org")
+    monkeypatch.setattr(facade, "join_matrix_room", AsyncMock())
+
+    existing = await ensure_dm_room(client, interface, "!abc", create=False)
+    missing = await ensure_dm_room(client, interface, "!missing", create=False)
+
+    assert existing == "!existing:example.org"
+    assert missing is None
+    assert len(client.created) == 0
+    assert config["matrix_rooms"][0]["meshtastic_node_name"] == "NEW"

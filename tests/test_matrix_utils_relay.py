@@ -1656,6 +1656,52 @@ async def test_on_room_message_unsupported_room(
             mock_queue_message.assert_not_called()
 
 
+@patch("mmrelay.matrix_utils.connect_meshtastic")
+@patch("mmrelay.matrix_utils.queue_message")
+@patch("mmrelay.matrix_utils.bot_start_time", 1234567880)
+async def test_on_room_message_channel_writer_allowlist_blocks_unlisted_user(
+    mock_queue_message, _mock_connect_meshtastic, mock_room, mock_event, test_config
+):
+    test_config["matrix_rooms"][0]["meshtastic_portal_type"] = "channel"
+    test_config["meshtastic_portals"] = {
+        "enabled": True,
+        "access": {"channel_writers": ["@allowed:matrix.org"]},
+    }
+
+    with (
+        patch("mmrelay.matrix_utils.config", test_config),
+        patch("mmrelay.matrix_utils.matrix_rooms", test_config["matrix_rooms"]),
+        patch("mmrelay.matrix_utils.bot_user_id", test_config["matrix"]["bot_user_id"]),
+        patch("mmrelay.matrix_utils.matrix_client", MagicMock()),
+    ):
+        await on_room_message(mock_room, mock_event)
+
+    mock_queue_message.assert_not_called()
+
+
+@patch("mmrelay.matrix_utils.connect_meshtastic")
+@patch("mmrelay.matrix_utils.queue_message")
+@patch("mmrelay.matrix_utils.bot_start_time", 1234567880)
+async def test_on_room_message_channel_writer_allowlist_allows_listed_user(
+    mock_queue_message, _mock_connect_meshtastic, mock_room, mock_event, test_config
+):
+    test_config["matrix_rooms"][0]["meshtastic_portal_type"] = "channel"
+    test_config["meshtastic_portals"] = {
+        "enabled": True,
+        "access": {"channel_writers": [mock_event.sender]},
+    }
+
+    with (
+        patch("mmrelay.matrix_utils.config", test_config),
+        patch("mmrelay.matrix_utils.matrix_rooms", test_config["matrix_rooms"]),
+        patch("mmrelay.matrix_utils.bot_user_id", test_config["matrix"]["bot_user_id"]),
+        patch("mmrelay.matrix_utils.matrix_client", MagicMock()),
+    ):
+        await on_room_message(mock_room, mock_event)
+
+    mock_queue_message.assert_called_once()
+
+
 async def test_on_room_message_detection_sensor_enabled(
     mock_room, mock_event, test_config
 ):

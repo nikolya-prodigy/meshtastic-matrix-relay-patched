@@ -332,6 +332,42 @@ def test_on_meshtastic_message_portals_mode_formats_channel_message():
 
 
 @pytest.mark.usefixtures("reset_meshtastic_globals")
+def test_on_meshtastic_message_refreshes_existing_dm_room_metadata():
+    config = _base_config()
+    config["meshtastic_portals"] = {"enabled": True}
+    config["matrix_rooms"][0]["meshtastic_portal_type"] = "channel"
+    _set_globals(config)
+    packet = _base_packet()
+    ensure_dm_room = AsyncMock(return_value="!dm:test")
+
+    class FakeFuture:
+        def add_done_callback(self, _callback):
+            return None
+
+    def fake_run_coroutine_threadsafe(coro, _loop):
+        coro.close()
+        return FakeFuture()
+
+    with (
+        _patch_message_deps(patch_logger=False) as (_mock_logger, mock_relay),
+        patch("mmrelay.matrix_utils.matrix_client", object()),
+        patch("mmrelay.matrix_utils.ensure_dm_room", ensure_dm_room),
+        patch(
+            "mmrelay.matrix_utils.asyncio.run_coroutine_threadsafe",
+            side_effect=fake_run_coroutine_threadsafe,
+        ),
+    ):
+        on_meshtastic_message(packet, _make_interface())
+
+    ensure_dm_room.assert_called_once()
+    assert ensure_dm_room.call_args.args[2] == 123
+    assert ensure_dm_room.call_args.kwargs["channel"] == 0
+    assert ensure_dm_room.call_args.kwargs["create"] is False
+    assert mock_relay is not None
+    mock_relay.assert_awaited_once()
+
+
+@pytest.mark.usefixtures("reset_meshtastic_globals")
 def test_on_meshtastic_message_unknown_portnum_plugin_only():
     config = _base_config()
     _set_globals(config)

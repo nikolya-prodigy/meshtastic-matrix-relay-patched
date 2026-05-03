@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
+import html
 from typing import Any
 
 import mmrelay.matrix_utils as facade
@@ -21,6 +22,7 @@ CONTROL_HELP = """Meshtastic bot control
 Commands:
 help - Show this help
 ping - Check that the bridge responds
+ping-node <number|node-id|name> - Send a direct ping text to a Meshtastic node
 health - Show mesh health summary
 nodes [limit|all] - List known Meshtastic nodes
 find <query> - Search known Meshtastic nodes and renumber the result
@@ -124,10 +126,19 @@ async def send_control_message(room_id: str, message: str) -> None:
         await client.room_send(
             room_id=room_id,
             message_type="m.room.message",
-            content={"msgtype": "m.text", "body": message},
+            content={
+                "msgtype": "m.text",
+                "body": message,
+                "format": "org.matrix.custom.html",
+                "formatted_body": _plain_text_to_html(message),
+            },
         )
     except Exception:  # noqa: BLE001 - keep control room handling non-fatal
         facade.logger.exception("Failed to send control message to %s", room_id)
+
+
+def _plain_text_to_html(message: str) -> str:
+    return html.escape(message).replace("\n", "<br>")
 
 
 def _message_body(event: Any) -> str:
@@ -551,6 +562,42 @@ async def _handle_node_command(room: Any, event: Any, args: str) -> bool:
     return True
 
 
+async def _handle_ping_node_command(room: Any, event: Any, args: str) -> bool:
+    entry = _resolve_node_entry(room, event, args)
+    if entry is None:
+        await send_control_message(
+            room.room_id,
+            "Node not found. Run `nodes` or `find <query>`, then use `ping-node <number>`.",
+        )
+        return True
+
+    interface = _get_interface()
+    if interface is None:
+        await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
+        return True
+
+    success = facade.queue_message(
+        interface.sendText,
+        text="ping",
+        channelIndex=0,
+        destinationId=entry.node_id,
+        wantAck=True,
+        description=f"Ping node {entry.title}",
+    )
+    if not success:
+        await send_control_message(room.room_id, f"Failed to queue ping for {entry.title}.")
+        return True
+
+    await send_control_message(
+        room.room_id,
+        (
+            f"Queued ping for {entry.title}.\n"
+            "If that node or relay software replies to ping text, the response will arrive as a DM."
+        ),
+    )
+    return True
+
+
 async def _handle_dm_command(room: Any, event: Any, args: str) -> bool:
     entry = _resolve_node_entry(room, event, args)
     if entry is None:
@@ -848,6 +895,8 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
         return await _handle_find_command(room, event, args)
     if command.casefold() == "node":
         return await _handle_node_command(room, event, args)
+    if command.casefold() in {"ping-node", "pingnode"}:
+        return await _handle_ping_node_command(room, event, args)
     if command.casefold() == "dm":
         return await _handle_dm_command(room, event, args)
     if command.casefold() == "channels":
