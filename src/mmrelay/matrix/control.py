@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -23,9 +23,10 @@ help - Show this help
 ping - Check that the bridge responds
 health - Show mesh health summary
 nodes [limit|all] - List known Meshtastic nodes
-node <number> - Show details for a node from the last nodes list
-dm <number> - Create or open a direct Matrix room for a node
-dm <number> <message> - Send a direct Meshtastic message to a node
+find <query> - Search known Meshtastic nodes and renumber the result
+node <number|node-id|name> - Show details for a node
+dm <number|node-id|name> - Create or open a direct Matrix room for a node
+dm <number|node-id|name> <message> - Send a direct Meshtastic message to a node
 channels - List Meshtastic channels known to the bridge
 ch <channel> <message> - Send a message to a Meshtastic channel
 send <channel> <message> - Alias for ch
@@ -240,6 +241,10 @@ def _build_node_index(interface: Any) -> list[NodeEntry]:
     return entries
 
 
+def _renumber_entries(entries: list[NodeEntry]) -> list[NodeEntry]:
+    return [replace(entry, number=number) for number, entry in enumerate(entries, start=1)]
+
+
 def _parse_node_limit(args: str, config: dict[str, Any] | None) -> int | None:
     text = args.strip().casefold()
     if text in {"all", "*"}:
@@ -323,6 +328,48 @@ def _entry_brief(entry: NodeEntry) -> str:
     )
 
 
+def _node_search_text(entry: NodeEntry) -> str:
+    return " ".join(
+        (
+            entry.node_id,
+            entry.node_id.lstrip("!"),
+            entry.short_name,
+            entry.long_name,
+            entry.hw_model,
+            entry.title,
+        )
+    ).casefold()
+
+
+def _node_matches_query(entry: NodeEntry, query: str) -> bool:
+    terms = [term for term in query.casefold().split() if term]
+    if not terms:
+        return False
+    haystack = _node_search_text(entry)
+    return all(term in haystack for term in terms)
+
+
+def _find_node_by_token(entries: list[NodeEntry], token: str) -> NodeEntry | None:
+    token_cf = token.casefold().strip()
+    if not token_cf:
+        return None
+
+    candidates: list[NodeEntry] = []
+    for entry in entries:
+        exact_values = {
+            entry.node_id.casefold(),
+            entry.node_id.lstrip("!").casefold(),
+            entry.short_name.casefold(),
+            entry.long_name.casefold(),
+            entry.title.casefold(),
+        }
+        if token_cf in exact_values:
+            return entry
+        if token_cf in _node_search_text(entry):
+            candidates.append(entry)
+    return candidates[0] if len(candidates) == 1 else None
+
+
 async def _handle_nodes_command(room: Any, event: Any, args: str) -> bool:
     interface = _get_interface()
     if interface is None:
@@ -341,6 +388,44 @@ async def _handle_nodes_command(room: Any, event: Any, args: str) -> bool:
         header = f"Nodes: {len(entries)}, showing {len(shown)}. Use `nodes all` to show all."
     else:
         header = f"Nodes: {len(entries)}"
+    await send_control_message(
+        room.room_id,
+        header + "\n\n" + "\n\n".join(_entry_brief(entry) for entry in shown),
+    )
+    return True
+
+
+async def _handle_find_command(room: Any, event: Any, args: str) -> bool:
+    interface = _get_interface()
+    if interface is None:
+        await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
+        return True
+
+    query = args.strip()
+    if not query:
+        await send_control_message(
+            room.room_id,
+            "Usage: find <query>\nExample: find nick",
+        )
+        return True
+
+    entries = _build_node_index(interface)
+    matches = _renumber_entries(
+        [entry for entry in entries if _node_matches_query(entry, query)]
+    )
+    _NODE_INDEX_CACHE[_cache_key(room, event)] = matches
+    if not matches:
+        await send_control_message(room.room_id, f"No nodes found for: {query}")
+        return True
+
+    shown = matches[:DEFAULT_NODES_LIMIT]
+    if len(matches) > len(shown):
+        header = (
+            f"Found nodes: {len(matches)}, showing {len(shown)}. "
+            "Refine the query to narrow it down."
+        )
+    else:
+        header = f"Found nodes: {len(matches)}"
     await send_control_message(
         room.room_id,
         header + "\n\n" + "\n\n".join(_entry_brief(entry) for entry in shown),
@@ -421,8 +506,12 @@ async def _handle_channel_send_command(room: Any, args: str) -> bool:
     return True
 
 
-def _find_cached_node(room: Any, event: Any, args: str) -> NodeEntry | None:
-    number_text = args.strip().split(maxsplit=1)[0] if args.strip() else ""
+def _first_arg(args: str) -> str:
+    return args.strip().split(maxsplit=1)[0] if args.strip() else ""
+
+
+def _find_cached_node_by_number(room: Any, event: Any, args: str) -> NodeEntry | None:
+    number_text = _first_arg(args)
     try:
         number = int(number_text)
     except ValueError:
@@ -431,17 +520,31 @@ def _find_cached_node(room: Any, event: Any, args: str) -> NodeEntry | None:
     return next((entry for entry in entries if entry.number == number), None)
 
 
-def _message_after_node_number(args: str) -> str:
-    _number, _separator, message = args.strip().partition(" ")
+def _resolve_node_entry(room: Any, event: Any, args: str) -> NodeEntry | None:
+    cached_entry = _find_cached_node_by_number(room, event, args)
+    if cached_entry is not None:
+        return cached_entry
+
+    token = _first_arg(args)
+    if not token:
+        return None
+    interface = _get_interface()
+    if interface is None:
+        return None
+    return _find_node_by_token(_build_node_index(interface), token)
+
+
+def _message_after_node_target(args: str) -> str:
+    _target, _separator, message = args.strip().partition(" ")
     return message.strip()
 
 
 async def _handle_node_command(room: Any, event: Any, args: str) -> bool:
-    entry = _find_cached_node(room, event, args)
+    entry = _resolve_node_entry(room, event, args)
     if entry is None:
         await send_control_message(
             room.room_id,
-            "Node not found. Run `nodes` first, then use `node <number>`.",
+            "Node not found. Run `nodes` or `find <query>`, then use `node <number>`.",
         )
         return True
     await send_control_message(room.room_id, _entry_brief(entry))
@@ -449,11 +552,11 @@ async def _handle_node_command(room: Any, event: Any, args: str) -> bool:
 
 
 async def _handle_dm_command(room: Any, event: Any, args: str) -> bool:
-    entry = _find_cached_node(room, event, args)
+    entry = _resolve_node_entry(room, event, args)
     if entry is None:
         await send_control_message(
             room.room_id,
-            "Node not found. Run `nodes` first, then use `dm <number>`.",
+            "Node not found. Run `nodes` or `find <query>`, then use `dm <number>`.",
         )
         return True
 
@@ -466,7 +569,7 @@ async def _handle_dm_command(room: Any, event: Any, args: str) -> bool:
     dm_room_id = None
     if client is not None:
         dm_room_id = await facade.ensure_dm_room(client, interface, entry.node_id)
-    message = _message_after_node_number(args)
+    message = _message_after_node_target(args)
     if message:
         message = facade.truncate_message(message)
         success = facade.queue_message(
@@ -741,6 +844,8 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
         return True
     if command.casefold() == "nodes":
         return await _handle_nodes_command(room, event, args)
+    if command.casefold() == "find":
+        return await _handle_find_command(room, event, args)
     if command.casefold() == "node":
         return await _handle_node_command(room, event, args)
     if command.casefold() == "dm":

@@ -180,13 +180,84 @@ async def test_dm_command_with_message_does_not_require_matrix_client(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_dm_command_accepts_node_id_without_cached_nodes(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    queue_message = MagicMock(return_value=True)
+    ensure_dm_room = AsyncMock(return_value="!dm:example.org")
+    monkeypatch.setattr(facade, "matrix_client", object())
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+    monkeypatch.setattr(facade, "ensure_dm_room", ensure_dm_room)
+    monkeypatch.setattr(facade, "queue_message", queue_message)
+
+    handled = await control.handle_control_room_message(_room(), _event("dm !new hello"))
+
+    assert handled is True
+    ensure_dm_room.assert_awaited_once()
+    queue_message.assert_called_once_with(
+        interface.sendText,
+        text="hello",
+        channelIndex=0,
+        destinationId="!new",
+        wantAck=True,
+        description="Direct message to NEW New Node",
+    )
+    assert "Queued direct message for NEW New Node" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_dm_command_accepts_short_name_without_cached_nodes(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    ensure_dm_room = AsyncMock(return_value="!dm:example.org")
+    monkeypatch.setattr(facade, "matrix_client", object())
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+    monkeypatch.setattr(facade, "ensure_dm_room", ensure_dm_room)
+
+    handled = await control.handle_control_room_message(_room(), _event("dm NEW"))
+
+    assert handled is True
+    ensure_dm_room.assert_awaited_once()
+    assert ensure_dm_room.await_args.args[2] == "!new"
+    assert "DM room is ready for NEW New Node" in sent[-1]
+
+
+@pytest.mark.asyncio
 async def test_node_command_requires_cache(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
 
     handled = await control.handle_control_room_message(_room(), _event("node 1"))
 
     assert handled is True
-    assert sent == ["Node not found. Run `nodes` first, then use `node <number>`."]
+    assert sent == [
+        "Node not found. Run `nodes` or `find <query>`, then use `node <number>`."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_find_command_searches_and_renumbers_cache(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+
+    handled = await control.handle_control_room_message(_room(), _event("find old"))
+
+    assert handled is True
+    assert "Found nodes: 1" in sent[-1]
+    assert "1. OLD Old Node" in sent[-1]
+
+    entry = control._NODE_INDEX_CACHE[("!control:example.org", "@nikolya:example.org")][0]
+    assert entry.number == 1
+    assert entry.node_id == "!old"
+
+
+@pytest.mark.asyncio
+async def test_node_command_accepts_node_id_without_cached_nodes(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+
+    handled = await control.handle_control_room_message(_room(), _event("node !new"))
+
+    assert handled is True
+    assert "NEW New Node" in sent[-1]
+    assert "id: !new" in sent[-1]
 
 
 @pytest.mark.asyncio
