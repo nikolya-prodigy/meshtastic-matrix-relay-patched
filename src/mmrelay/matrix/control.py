@@ -25,6 +25,7 @@ health - Show mesh health summary
 nodes [limit|all] - List known Meshtastic nodes
 node <number> - Show details for a node from the last nodes list
 dm <number> - Create or open a direct Matrix room for a node
+dm <number> <message> - Send a direct Meshtastic message to a node
 rooms - List Matrix rooms managed by this bridge
 resync - Create any missing channel rooms again
 map - Render a map of nodes with positions
@@ -307,6 +308,11 @@ def _find_cached_node(room: Any, event: Any, args: str) -> NodeEntry | None:
     return next((entry for entry in entries if entry.number == number), None)
 
 
+def _message_after_node_number(args: str) -> str:
+    _number, _separator, message = args.strip().partition(" ")
+    return message.strip()
+
+
 async def _handle_node_command(room: Any, event: Any, args: str) -> bool:
     entry = _find_cached_node(room, event, args)
     if entry is None:
@@ -334,11 +340,37 @@ async def _handle_dm_command(room: Any, event: Any, args: str) -> bool:
         from mmrelay import meshtastic_utils
 
         interface = getattr(meshtastic_utils, "meshtastic_client", None)
-    if client is None or interface is None:
+    if interface is None:
         await send_control_message(room.room_id, "Matrix or Meshtastic client is not ready.")
         return True
 
-    dm_room_id = await facade.ensure_dm_room(client, interface, entry.node_id)
+    dm_room_id = None
+    if client is not None:
+        dm_room_id = await facade.ensure_dm_room(client, interface, entry.node_id)
+    message = _message_after_node_number(args)
+    if message:
+        message = facade.truncate_message(message)
+        success = facade.queue_message(
+            interface.sendText,
+            text=message,
+            channelIndex=0,
+            destinationId=entry.node_id,
+            wantAck=True,
+            description=f"Direct message to {entry.title}",
+        )
+        if not success:
+            await send_control_message(
+                room.room_id,
+                f"Failed to queue direct message for {entry.title}.",
+            )
+            return True
+        room_hint = f"\nroom: {dm_room_id}" if dm_room_id else ""
+        await send_control_message(
+            room.room_id,
+            f"Queued direct message for {entry.title}.{room_hint}",
+        )
+        return True
+
     if not dm_room_id:
         await send_control_message(room.room_id, f"Failed to create DM room for {entry.title}.")
         return True

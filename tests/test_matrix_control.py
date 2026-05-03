@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -22,6 +22,7 @@ def _event(body: str) -> SimpleNamespace:
 
 def _interface() -> SimpleNamespace:
     return SimpleNamespace(
+        sendText=MagicMock(),
         nodes={
             "old": {
                 "user": {
@@ -105,6 +106,54 @@ async def test_dm_command_creates_room_from_cached_node(monkeypatch) -> None:
     assert ensure_dm_room.await_args.args[2] == "!new"
     assert "DM room is ready for NEW New Node" in sent[-1]
     assert "!dm:example.org" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_dm_command_with_message_queues_direct_send(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    queue_message = MagicMock(return_value=True)
+    ensure_dm_room = AsyncMock(return_value="!dm:example.org")
+    monkeypatch.setattr(facade, "matrix_client", object())
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+    monkeypatch.setattr(facade, "ensure_dm_room", ensure_dm_room)
+    monkeypatch.setattr(facade, "queue_message", queue_message)
+
+    await control.handle_control_room_message(_room(), _event("nodes"))
+    handled = await control.handle_control_room_message(_room(), _event("dm 1 привет"))
+
+    assert handled is True
+    ensure_dm_room.assert_awaited_once()
+    queue_message.assert_called_once_with(
+        interface.sendText,
+        text="привет",
+        channelIndex=0,
+        destinationId="!new",
+        wantAck=True,
+        description="Direct message to NEW New Node",
+    )
+    assert "Queued direct message for NEW New Node" in sent[-1]
+    assert "!dm:example.org" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_dm_command_with_message_does_not_require_matrix_client(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    queue_message = MagicMock(return_value=True)
+    ensure_dm_room = AsyncMock(return_value="!dm:example.org")
+    monkeypatch.setattr(facade, "matrix_client", None)
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+    monkeypatch.setattr(facade, "ensure_dm_room", ensure_dm_room)
+    monkeypatch.setattr(facade, "queue_message", queue_message)
+
+    await control.handle_control_room_message(_room(), _event("nodes"))
+    handled = await control.handle_control_room_message(_room(), _event("dm 1 hello"))
+
+    assert handled is True
+    ensure_dm_room.assert_not_awaited()
+    queue_message.assert_called_once()
+    assert "Queued direct message for NEW New Node" in sent[-1]
 
 
 @pytest.mark.asyncio
