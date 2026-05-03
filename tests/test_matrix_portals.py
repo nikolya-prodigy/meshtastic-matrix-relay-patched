@@ -21,6 +21,7 @@ class FakeClient:
         self.invites: list[tuple[str, str]] = []
         self.sent: list[tuple[str, dict]] = []
         self.avatars: list[tuple[str, dict]] = []
+        self.state: list[tuple[str, str, str, dict]] = []
         self.bot_avatar: str | None = None
 
     async def room_resolve_alias(self, _alias: str) -> SimpleNamespace:
@@ -35,8 +36,10 @@ class FakeClient:
     ) -> SimpleNamespace:
         if event_type == "m.room.avatar":
             self.avatars.append((room_id, content))
-        else:
+        elif event_type == "m.space.child":
             self.children.append((room_id, state_key))
+        else:
+            self.state.append((room_id, event_type, state_key, content))
         return SimpleNamespace()
 
     async def upload(
@@ -123,6 +126,54 @@ async def test_ensure_channel_rooms_creates_space_and_channel_rooms(monkeypatch)
         ("!room2:example.org", "@nikolya:example.org"),
     ]
     assert client.children == [("!room1:example.org", "!room2:example.org")]
+    assert client.created[1]["topic"] == "Meshtastic channel #0: LongFast"
+
+
+@pytest.mark.asyncio
+async def test_ensure_channel_rooms_updates_existing_channel_room(monkeypatch) -> None:
+    client = FakeClient()
+    config = {
+        "matrix_rooms": [
+            {
+                "id": "!existing:example.org",
+                "meshtastic_channel": 0,
+                "meshtastic_portal_type": "channel",
+                "meshtastic_channel_name": "OldName",
+            },
+            {
+                "id": "!dm:example.org",
+                "meshtastic_channel": 0,
+                "meshtastic_portal_type": "dm",
+                "meshtastic_destination": "123",
+            },
+        ],
+        "meshtastic": {"meshnet_name": "Fallback"},
+        "meshtastic_portals": {"enabled": True},
+    }
+    interface = SimpleNamespace(
+        localNode=SimpleNamespace(
+            channels=[SimpleNamespace(settings=SimpleNamespace(name="LongFast"))]
+        )
+    )
+    monkeypatch.setattr(facade, "config", config)
+    monkeypatch.setattr(facade, "bot_user_id", "@meshtasticbot:example.org")
+    monkeypatch.setattr(facade, "join_matrix_room", AsyncMock())
+
+    await ensure_channel_rooms(client, interface, config)
+
+    assert config["matrix_rooms"][0]["meshtastic_channel_name"] == "LongFast"
+    assert config["matrix_rooms"][1]["meshtastic_portal_type"] == "dm"
+    assert len(client.created) == 1
+    assert client.created[0]["name"] == "Meshtastic"
+    assert client.created[0]["space"] is True
+    assert ("!existing:example.org", "m.room.name", "", {"name": "#0 LongFast"}) in client.state
+    assert (
+        "!existing:example.org",
+        "m.room.topic",
+        "",
+        {"topic": "Meshtastic channel #0: LongFast"},
+    ) in client.state
+    assert ("!room1:example.org", "!existing:example.org") in client.children
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ _ICON_MXC_URI: str | None = None
 _ICON_UPLOAD_ATTEMPTED = False
 _BOT_AVATAR_UPDATED = False
 _ROOM_AVATAR_UPDATED: set[str] = set()
+_ROOM_PROFILE_CACHE: dict[str, tuple[str, str]] = {}
 
 
 def portals_enabled(config: dict[str, Any] | None) -> bool:
@@ -199,6 +200,57 @@ async def _set_room_avatar(client: Any, room_id: str | None) -> None:
     facade.logger.info("Updated Matrix room avatar for %s", room_id)
 
 
+async def _put_room_state(
+    client: Any,
+    room_id: str,
+    event_type: str,
+    content: dict[str, Any],
+    state_key: str = "",
+) -> bool:
+    try:
+        await client.room_put_state(
+            room_id=room_id,
+            event_type=event_type,
+            state_key=state_key,
+            content=content,
+        )
+        return True
+    except TypeError:
+        try:
+            await client.room_put_state(room_id, event_type, content, state_key)
+            return True
+        except Exception:  # noqa: BLE001
+            facade.logger.debug(
+                "Failed to update %s state for %s", event_type, room_id, exc_info=True
+            )
+            return False
+    except Exception:  # noqa: BLE001
+        facade.logger.debug(
+            "Failed to update %s state for %s", event_type, room_id, exc_info=True
+        )
+        return False
+
+
+async def _update_room_profile(
+    client: Any,
+    room_id: str | None,
+    *,
+    name: str,
+    topic: str,
+) -> None:
+    if not room_id:
+        return
+    cache_value = (name, topic)
+    if _ROOM_PROFILE_CACHE.get(room_id) == cache_value:
+        return
+
+    name_ok = await _put_room_state(client, room_id, "m.room.name", {"name": name})
+    topic_ok = await _put_room_state(client, room_id, "m.room.topic", {"topic": topic})
+    if name_ok and topic_ok:
+        _ROOM_PROFILE_CACHE[room_id] = cache_value
+        facade.logger.info("Updated Matrix room profile for %s", room_id)
+
+
 async def _resolve_alias(client: Any, alias_localpart: str) -> str | None:
     server = _server_name()
     if not server:
@@ -235,6 +287,12 @@ async def _create_room(
     existing_room_id = await _resolve_alias(client, alias_localpart)
     if existing_room_id:
         await facade.join_matrix_room(client, existing_room_id)
+        await _update_room_profile(
+            client,
+            existing_room_id,
+            name=name,
+            topic=topic,
+        )
         await _invite_configured_users(client, existing_room_id, invite_users)
         return existing_room_id
 
@@ -286,17 +344,7 @@ async def _add_space_child(client: Any, space_id: str | None, child_id: str | No
     server = _server_name()
     content = {"via": [server], "suggested": True} if server else {"suggested": True}
     try:
-        await client.room_put_state(
-            room_id=space_id,
-            event_type="m.space.child",
-            state_key=child_id,
-            content=content,
-        )
-    except TypeError:
-        try:
-            await client.room_put_state(space_id, "m.space.child", content, child_id)
-        except Exception:  # noqa: BLE001
-            facade.logger.debug("Failed to add %s to Matrix space", child_id, exc_info=True)
+        await _put_room_state(client, space_id, "m.space.child", content, child_id)
     except Exception:  # noqa: BLE001
         facade.logger.debug("Failed to add %s to Matrix space", child_id, exc_info=True)
 
@@ -308,13 +356,15 @@ async def ensure_portal_space(client: Any) -> str | None:
         return None
 
     name = str(space_cfg.get("name") or DEFAULT_SPACE_NAME)
+    topic = "Meshtastic bridge rooms"
     room_id = await _create_room(
         client,
         name=name,
-        topic="Meshtastic bridge rooms",
+        topic=topic,
         alias_localpart=_space_alias_localpart(),
         is_space=True,
     )
+    await _update_room_profile(client, room_id, name=name, topic=topic)
     await _set_room_avatar(client, room_id)
     return room_id
 
@@ -393,6 +443,10 @@ def _channel_room_name(index: int, name: str) -> str:
     return template.format(index=index, name=name)
 
 
+def _channel_room_topic(index: int, name: str) -> str:
+    return f"Meshtastic channel #{index}: {name}"
+
+
 async def ensure_channel_rooms(client: Any, interface: Any, config: dict[str, Any]) -> None:
     cfg = _portal_config(config)
     channels_cfg = cfg.get("channels") if isinstance(cfg.get("channels"), dict) else {}
@@ -409,19 +463,33 @@ async def ensure_channel_rooms(client: Any, interface: Any, config: dict[str, An
         int(room.get("meshtastic_channel")): room
         for room in matrix_rooms
         if isinstance(room, dict)
+        and room.get("meshtastic_portal_type") == "channel"
         and str(room.get("meshtastic_channel", "")).lstrip("-").isdigit()
     }
 
     for channel in discover_channels(interface, config):
         index = channel["index"]
         name = channel["name"]
-        if index in existing_channels and existing_channels[index].get("id"):
-            continue
         room_name = _channel_room_name(index, name)
+        room_topic = _channel_room_topic(index, name)
+        if index in existing_channels and existing_channels[index].get("id"):
+            existing_room = existing_channels[index]
+            existing_room["meshtastic_portal_type"] = "channel"
+            existing_room["meshtastic_channel_name"] = name
+            room_id = existing_room.get("id")
+            if isinstance(room_id, str):
+                await _update_room_profile(
+                    client,
+                    room_id,
+                    name=room_name,
+                    topic=room_topic,
+                )
+                await _add_space_child(client, space_id, room_id)
+            continue
         room_id = await _create_room(
             client,
             name=room_name,
-            topic=f"Meshtastic channel #{index} {name}",
+            topic=room_topic,
             alias_localpart=_alias_localpart("ch", f"{index}-{name}"),
         )
         if not room_id:
@@ -456,6 +524,13 @@ async def ensure_control_room(client: Any, config: dict[str, Any]) -> str | None
         if isinstance(room, dict) and room.get("meshtastic_portal_type") == "control":
             room_id = room.get("id")
             if isinstance(room_id, str):
+                room_name = str(cfg.get("room_name") or "Meshtastic bot")
+                await _update_room_profile(
+                    client,
+                    room_id,
+                    name=room_name,
+                    topic="Meshtastic bridge control room",
+                )
                 await _invite_configured_users(client, room_id, users)
                 return room_id
 
@@ -523,6 +598,15 @@ async def ensure_dm_room(
     for room in matrix_rooms:
         if isinstance(room, dict) and str(room.get("meshtastic_destination")) == node_key:
             room_id = room.get("id")
+            if isinstance(room_id, str):
+                room["meshtastic_node_name"] = display_name
+                await _update_room_profile(
+                    client,
+                    room_id,
+                    name=room_name,
+                    topic=f"Meshtastic direct messages with {display_name} ({node_key})",
+                )
+                return room_id
             return room_id if isinstance(room_id, str) else None
 
     space_id = await ensure_portal_space(client)
