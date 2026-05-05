@@ -21,6 +21,9 @@ def _event(body: str) -> SimpleNamespace:
 
 
 def _interface() -> SimpleNamespace:
+    import time
+
+    now = time.time()
     interface = SimpleNamespace(
         sendText=MagicMock(),
         localNode=SimpleNamespace(
@@ -44,7 +47,7 @@ def _interface() -> SimpleNamespace:
                     "longName": "Old Node",
                     "hwModel": "TEST",
                 },
-                "lastHeard": 100,
+                "lastHeard": now - 3 * 60 * 60,
             },
             "new": {
                 "user": {
@@ -53,7 +56,7 @@ def _interface() -> SimpleNamespace:
                     "longName": "New Node",
                     "hwModel": "HELTEC_V4",
                 },
-                "lastHeard": 200,
+                "lastHeard": now - 60,
                 "hopsAway": 1,
                 "snr": -7.5,
                 "deviceMetrics": {"batteryLevel": 95, "voltage": 4.1},
@@ -106,7 +109,7 @@ async def test_nodes_command_builds_stable_numbered_cache(monkeypatch) -> None:
     handled = await control.handle_control_room_message(_room(), _event("nodes 1"))
 
     assert handled is True
-    assert "Nodes: 2, showing 1" in sent[0]
+    assert "Nodes: 2 / Online 1, showing 1 of 2" in sent[0]
     assert "1. NEW New Node" in sent[0]
     assert "OLD Old Node" not in sent[0]
 
@@ -132,13 +135,23 @@ async def test_dm_command_creates_room_from_cached_node(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_dm_command_with_message_queues_direct_send(monkeypatch) -> None:
+async def test_nodes_online_filters_recent_nodes(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
-    interface = _interface()
+
+    handled = await control.handle_control_room_message(_room(), _event("nodes online"))
+
+    assert handled is True
+    assert "Nodes: 2 / Online 1" in sent[-1]
+    assert "NEW New Node" in sent[-1]
+    assert "OLD Old Node" not in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_dm_command_with_extra_text_only_creates_room(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
     queue_message = MagicMock(return_value=True)
     ensure_dm_room = AsyncMock(return_value="!dm:example.org")
     monkeypatch.setattr(facade, "matrix_client", object())
-    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
     monkeypatch.setattr(facade, "ensure_dm_room", ensure_dm_room)
     monkeypatch.setattr(facade, "queue_message", queue_message)
 
@@ -147,26 +160,17 @@ async def test_dm_command_with_message_queues_direct_send(monkeypatch) -> None:
 
     assert handled is True
     ensure_dm_room.assert_awaited_once()
-    queue_message.assert_called_once_with(
-        interface.sendText,
-        text="привет",
-        channelIndex=0,
-        destinationId="!new",
-        wantAck=True,
-        description="Direct message to NEW New Node",
-    )
-    assert "Queued direct message for NEW New Node" in sent[-1]
+    queue_message.assert_not_called()
+    assert "DM room is ready for NEW New Node" in sent[-1]
     assert "!dm:example.org" in sent[-1]
 
 
 @pytest.mark.asyncio
-async def test_dm_command_with_message_does_not_require_matrix_client(monkeypatch) -> None:
+async def test_dm_command_requires_matrix_client(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
-    interface = _interface()
     queue_message = MagicMock(return_value=True)
     ensure_dm_room = AsyncMock(return_value="!dm:example.org")
     monkeypatch.setattr(facade, "matrix_client", None)
-    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
     monkeypatch.setattr(facade, "ensure_dm_room", ensure_dm_room)
     monkeypatch.setattr(facade, "queue_message", queue_message)
 
@@ -175,34 +179,24 @@ async def test_dm_command_with_message_does_not_require_matrix_client(monkeypatc
 
     assert handled is True
     ensure_dm_room.assert_not_awaited()
-    queue_message.assert_called_once()
-    assert "Queued direct message for NEW New Node" in sent[-1]
+    queue_message.assert_not_called()
+    assert "Matrix or Meshtastic client is not ready." in sent[-1]
 
 
 @pytest.mark.asyncio
 async def test_dm_command_accepts_node_id_without_cached_nodes(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
     interface = _interface()
-    queue_message = MagicMock(return_value=True)
     ensure_dm_room = AsyncMock(return_value="!dm:example.org")
     monkeypatch.setattr(facade, "matrix_client", object())
     monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
     monkeypatch.setattr(facade, "ensure_dm_room", ensure_dm_room)
-    monkeypatch.setattr(facade, "queue_message", queue_message)
 
     handled = await control.handle_control_room_message(_room(), _event("dm !new hello"))
 
     assert handled is True
     ensure_dm_room.assert_awaited_once()
-    queue_message.assert_called_once_with(
-        interface.sendText,
-        text="hello",
-        channelIndex=0,
-        destinationId="!new",
-        wantAck=True,
-        description="Direct message to NEW New Node",
-    )
-    assert "Queued direct message for NEW New Node" in sent[-1]
+    assert "DM room is ready for NEW New Node" in sent[-1]
 
 
 @pytest.mark.asyncio
@@ -223,26 +217,17 @@ async def test_dm_command_accepts_short_name_without_cached_nodes(monkeypatch) -
 
 
 @pytest.mark.asyncio
-async def test_ping_node_command_queues_direct_ping(monkeypatch) -> None:
+async def test_ping_node_command_is_not_available(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
-    interface = _interface()
     queue_message = MagicMock(return_value=True)
-    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
     monkeypatch.setattr(facade, "queue_message", queue_message)
 
     await control.handle_control_room_message(_room(), _event("nodes"))
     handled = await control.handle_control_room_message(_room(), _event("ping-node 1"))
 
     assert handled is True
-    queue_message.assert_called_once_with(
-        interface.sendText,
-        text="ping",
-        channelIndex=0,
-        destinationId="!new",
-        wantAck=True,
-        description="Ping node NEW New Node",
-    )
-    assert "Queued ping for NEW New Node" in sent[-1]
+    queue_message.assert_not_called()
+    assert "Unknown command: ping-node" in sent[-1]
 
 
 @pytest.mark.asyncio
@@ -316,27 +301,20 @@ async def test_channels_command_lists_discovered_channels(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_channel_send_command_queues_channel_message(monkeypatch) -> None:
+async def test_channel_send_command_is_not_available(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
-    interface = _interface()
     queue_message = MagicMock(return_value=True)
-    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
     monkeypatch.setattr(facade, "queue_message", queue_message)
 
     handled = await control.handle_control_room_message(_room(), _event("ch 1 привет"))
 
     assert handled is True
-    queue_message.assert_called_once_with(
-        interface.sendText,
-        text="привет",
-        channelIndex=1,
-        description="Control message to channel #1 Anapa",
-    )
-    assert "Queued message for channel #1 Anapa" in sent[-1]
+    queue_message.assert_not_called()
+    assert "Unknown command: ch" in sent[-1]
 
 
 @pytest.mark.asyncio
-async def test_channel_send_command_rejects_unknown_channel(monkeypatch) -> None:
+async def test_send_alias_is_not_available(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
     queue_message = MagicMock(return_value=True)
     monkeypatch.setattr(facade, "queue_message", queue_message)
@@ -345,7 +323,7 @@ async def test_channel_send_command_rejects_unknown_channel(monkeypatch) -> None
 
     assert handled is True
     queue_message.assert_not_called()
-    assert "Channel #7 is not known" in sent[-1]
+    assert "Unknown command: send" in sent[-1]
 
 
 @pytest.mark.asyncio

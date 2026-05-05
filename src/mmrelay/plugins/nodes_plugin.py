@@ -12,6 +12,7 @@ from nio import (
 )
 
 from mmrelay.constants.domain import (
+    ONLINE_NODE_WINDOW_SECONDS,
     RELATIVE_TIME_DAYS_THRESHOLD,
     SECONDS_PER_DAY,
     SECONDS_PER_HOUR,
@@ -90,23 +91,31 @@ class Plugin(BasePlugin):
         """
         return """Show mesh radios and node data
 
-Usage: nodes [limit|all]
+Usage: nodes [online|limit|all]
 """
 
-    def _parse_limit(self, args: str | None) -> int | None:
-        text = (args or "").strip().casefold()
-        if not text:
-            raw_limit = self.config.get("max_display", DEFAULT_NODES_LIMIT)
-            try:
-                return max(1, int(raw_limit))
-            except (TypeError, ValueError):
-                return DEFAULT_NODES_LIMIT
-        if text in {"all", "*"}:
-            return None
+    def _default_limit(self) -> int:
+        raw_limit = self.config.get("max_display", DEFAULT_NODES_LIMIT)
         try:
-            return max(1, int(text.split()[0]))
+            return max(1, int(raw_limit))
         except (TypeError, ValueError):
             return DEFAULT_NODES_LIMIT
+
+    def _parse_options(self, args: str | None) -> tuple[bool, int | None]:
+        online_only = False
+        limit: int | None = self._default_limit()
+        for token in (args or "").casefold().split():
+            if token == "online":
+                online_only = True
+                continue
+            if token in {"all", "*"}:
+                limit = None
+                continue
+            try:
+                limit = max(1, int(token))
+            except (TypeError, ValueError):
+                continue
+        return online_only, limit
 
     @staticmethod
     def _last_heard_timestamp(info: dict[str, Any]) -> float:
@@ -116,6 +125,13 @@ Usage: nodes [limit|all]
         except (TypeError, ValueError, OverflowError):
             return -1
         return parsed if parsed > 0 else -1
+
+    @classmethod
+    def _is_online(cls, info: dict[str, Any]) -> bool:
+        timestamp = cls._last_heard_timestamp(info)
+        if timestamp <= 0:
+            return False
+        return 0 <= datetime.now().timestamp() - timestamp <= ONLINE_NODE_WINDOW_SECONDS
 
     def generate_response(self, args: str | None = None) -> str:
         """
@@ -135,12 +151,18 @@ Usage: nodes [limit|all]
         if meshtastic_client is None:
             return "Unable to connect to Meshtastic device."
 
-        limit = self._parse_limit(args)
-        nodes = [
+        online_only, limit = self._parse_options(args)
+        all_nodes = [
             (node_id, info)
             for node_id, info in meshtastic_client.nodes.items()
             if isinstance(info, dict)
         ]
+        online_nodes = [
+            (node_id, info)
+            for node_id, info in all_nodes
+            if self._is_online(info)
+        ]
+        nodes = online_nodes if online_only else all_nodes
         nodes.sort(key=lambda item: self._last_heard_timestamp(item[1]), reverse=True)
 
         node_lines: list[str] = []
@@ -200,11 +222,22 @@ Usage: nodes [limit|all]
                 f"   last: {last_heard}\n"
             )
 
-        total_count = len(nodes)
-        if limit is not None and total_count > limit:
-            response = f"Nodes: {total_count}, showing {limit}. Use `nodes all` to show all.\n\n"
+        total_count = len(all_nodes)
+        online_count = len(online_nodes)
+        filtered_count = len(nodes)
+        if limit is not None and filtered_count > limit:
+            response = (
+                f"Nodes: {total_count} / Online {online_count}, showing "
+                f"{min(limit, filtered_count)} of {filtered_count}. "
+                "Use `nodes all` or `nodes online all` to show all.\n\n"
+            )
         else:
-            response = f"Nodes: {total_count}\n\n"
+            response = f"Nodes: {total_count} / Online {online_count}\n\n"
+            if online_only:
+                response = (
+                    f"Nodes: {total_count} / Online {online_count}, "
+                    f"showing online {filtered_count}\n\n"
+                )
         return response + "".join(node_lines)
 
     async def handle_meshtastic_message(

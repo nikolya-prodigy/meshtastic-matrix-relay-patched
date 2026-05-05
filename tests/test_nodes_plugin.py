@@ -207,7 +207,7 @@ class TestNodesPlugin(unittest.TestCase):
         description = self.plugin.description
 
         self.assertIn("Show mesh radios and node data", description)
-        self.assertIn("Usage: nodes [limit|all]", description)
+        self.assertIn("Usage: nodes [online|limit|all]", description)
 
     @patch("mmrelay.meshtastic_utils.connect_meshtastic")
     def test_generate_response_with_full_data(self, mock_connect):
@@ -703,7 +703,7 @@ class TestNodesPlugin(unittest.TestCase):
 
         response = self.plugin.generate_response("1")
 
-        self.assertIn("Nodes: 2, showing 1", response)
+        self.assertIn("Nodes: 2 / Online 1, showing 1 of 2", response)
         self.assertIn("1. NEW New", response)
         self.assertNotIn("OLD Old", response)
 

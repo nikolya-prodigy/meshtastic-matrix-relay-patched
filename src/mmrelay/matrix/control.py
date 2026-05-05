@@ -9,6 +9,7 @@ from typing import Any
 
 import mmrelay.matrix_utils as facade
 from mmrelay.constants.domain import (
+    ONLINE_NODE_WINDOW_SECONDS,
     RELATIVE_TIME_DAYS_THRESHOLD,
     SECONDS_PER_DAY,
     SECONDS_PER_HOUR,
@@ -22,20 +23,15 @@ CONTROL_HELP = """Meshtastic bot control
 Commands:
 help - Show this help
 ping - Check that the bridge responds
-ping-node <number|node-id|name> - Send a direct ping text to a Meshtastic node
 health - Show mesh health summary
-nodes [limit|all] - List known Meshtastic nodes
+nodes [online|limit|all] - List known Meshtastic nodes
 find <query> - Search known Meshtastic nodes and renumber the result
 node <number|node-id|name> - Show details for a node
 dm <number|node-id|name> - Create or open a direct Matrix room for a node
-dm <number|node-id|name> <message> - Send a direct Meshtastic message to a node
 channels - List Meshtastic channels known to the bridge
-ch <channel> <message> - Send a message to a Meshtastic channel
-send <channel> <message> - Alias for ch
 rooms - List Matrix rooms managed by this bridge
 status - Show bridge, node, room and queue status
 refresh - Refresh managed rooms, profiles and bot avatar
-resync - Alias for refresh
 map - Render a map of nodes with positions
 weather - Current weather for the mesh area
 hourly - Hourly weather forecast
@@ -49,6 +45,12 @@ Channel rooms are for Meshtastic traffic. Use this chat for bot commands.
 
 DEFAULT_NODES_LIMIT = 30
 _NODE_INDEX_CACHE: dict[tuple[str, str], list["NodeEntry"]] = {}
+
+
+@dataclass(frozen=True)
+class NodeListOptions:
+    online_only: bool
+    limit: int | None
 
 
 @dataclass(frozen=True)
@@ -187,6 +189,14 @@ def _last_heard_timestamp(info: dict[str, Any]) -> float:
     return parsed if parsed > 0 else -1
 
 
+def _is_online_node_info(info: dict[str, Any], now: float | None = None) -> bool:
+    timestamp = _last_heard_timestamp(info)
+    if timestamp <= 0:
+        return False
+    current = now if now is not None else datetime.now().timestamp()
+    return 0 <= current - timestamp <= ONLINE_NODE_WINDOW_SECONDS
+
+
 def _format_hops(info: dict[str, Any]) -> str:
     hops_away = info.get("hopsAway")
     if hops_away is None:
@@ -256,16 +266,7 @@ def _renumber_entries(entries: list[NodeEntry]) -> list[NodeEntry]:
     return [replace(entry, number=number) for number, entry in enumerate(entries, start=1)]
 
 
-def _parse_node_limit(args: str, config: dict[str, Any] | None) -> int | None:
-    text = args.strip().casefold()
-    if text in {"all", "*"}:
-        return None
-    if text:
-        try:
-            return max(1, int(text.split()[0]))
-        except (TypeError, ValueError):
-            return DEFAULT_NODES_LIMIT
-
+def _default_node_limit(config: dict[str, Any] | None) -> int:
     plugins = config.get("plugins") if isinstance(config, dict) else None
     nodes_cfg = plugins.get("nodes") if isinstance(plugins, dict) else None
     raw_limit = nodes_cfg.get("max_display") if isinstance(nodes_cfg, dict) else None
@@ -273,6 +274,28 @@ def _parse_node_limit(args: str, config: dict[str, Any] | None) -> int | None:
         return max(1, int(raw_limit))
     except (TypeError, ValueError):
         return DEFAULT_NODES_LIMIT
+
+
+def _parse_node_list_options(
+    args: str,
+    config: dict[str, Any] | None,
+) -> NodeListOptions:
+    tokens = [token.casefold() for token in args.split()]
+    online_only = False
+    limit: int | None = _default_node_limit(config)
+
+    for token in tokens:
+        if token == "online":
+            online_only = True
+            continue
+        if token in {"all", "*"}:
+            limit = None
+            continue
+        try:
+            limit = max(1, int(token))
+        except (TypeError, ValueError):
+            continue
+    return NodeListOptions(online_only=online_only, limit=limit)
 
 
 def _cache_key(room: Any, event: Any) -> tuple[str, str]:
@@ -387,18 +410,46 @@ async def _handle_nodes_command(room: Any, event: Any, args: str) -> bool:
         await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
         return True
 
-    entries = _build_node_index(interface)
+    all_entries = _build_node_index(interface)
+    options = _parse_node_list_options(args, facade.config)
+    raw_nodes = getattr(interface, "nodes", {})
+    online_ids: set[str] = set()
+    if isinstance(raw_nodes, dict):
+        online_ids = {
+            str(
+                (info.get("user") if isinstance(info.get("user"), dict) else {}).get(
+                    "id"
+                )
+                or node_id
+            )
+            for node_id, info in raw_nodes.items()
+            if isinstance(info, dict) and _is_online_node_info(info)
+        }
+    entries = (
+        [entry for entry in all_entries if entry.node_id in online_ids]
+        if options.online_only
+        else all_entries
+    )
     _NODE_INDEX_CACHE[_cache_key(room, event)] = entries
-    limit = _parse_node_limit(args, facade.config)
-    shown = entries if limit is None else entries[:limit]
+    shown = entries if options.limit is None else entries[: options.limit]
     if not entries:
-        await send_control_message(room.room_id, "Nodes: 0")
+        header = f"Nodes: {len(all_entries)} / Online {len(online_ids)}"
+        if options.online_only:
+            header += "\nNo online nodes."
+        await send_control_message(room.room_id, header)
         return True
 
-    if limit is not None and len(entries) > limit:
-        header = f"Nodes: {len(entries)}, showing {len(shown)}. Use `nodes all` to show all."
+    scope = "online, " if options.online_only else ""
+    if options.limit is not None and len(entries) > options.limit:
+        header = (
+            f"Nodes: {len(all_entries)} / Online {len(online_ids)}, "
+            f"showing {len(shown)} {scope}of {len(entries)}. "
+            "Use `nodes all` or `nodes online all` to show all."
+        )
     else:
-        header = f"Nodes: {len(entries)}"
+        header = f"Nodes: {len(all_entries)} / Online {len(online_ids)}"
+        if options.online_only:
+            header += f", showing online {len(entries)}"
     await send_control_message(
         room.room_id,
         header + "\n\n" + "\n\n".join(_entry_brief(entry) for entry in shown),
@@ -461,62 +512,6 @@ async def _handle_channels_command(room: Any) -> bool:
     return True
 
 
-def _parse_channel_message(args: str) -> tuple[int | None, str]:
-    channel_text, _separator, message = args.strip().partition(" ")
-    try:
-        channel_index = int(channel_text)
-    except ValueError:
-        return None, ""
-    return channel_index, message.strip()
-
-
-async def _handle_channel_send_command(room: Any, args: str) -> bool:
-    interface = _get_interface()
-    if interface is None:
-        await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
-        return True
-
-    channel_index, message = _parse_channel_message(args)
-    if channel_index is None or not message:
-        await send_control_message(
-            room.room_id,
-            "Usage: ch <channel> <message>\nRun `channels` to see channel numbers.",
-        )
-        return True
-
-    channels = facade.discover_channels(interface, facade.config)
-    channel = next(
-        (item for item in channels if int(item.get("index", -1)) == channel_index),
-        None,
-    )
-    if channel is None:
-        await send_control_message(
-            room.room_id,
-            f"Channel #{channel_index} is not known. Run `channels` to see available channels.",
-        )
-        return True
-
-    message = facade.truncate_message(message)
-    success = facade.queue_message(
-        interface.sendText,
-        text=message,
-        channelIndex=channel_index,
-        description=f"Control message to channel #{channel_index} {channel['name']}",
-    )
-    if not success:
-        await send_control_message(
-            room.room_id,
-            f"Failed to queue message for channel #{channel_index} {channel['name']}.",
-        )
-        return True
-
-    await send_control_message(
-        room.room_id,
-        f"Queued message for channel #{channel_index} {channel['name']}.",
-    )
-    return True
-
-
 def _first_arg(args: str) -> str:
     return args.strip().split(maxsplit=1)[0] if args.strip() else ""
 
@@ -545,11 +540,6 @@ def _resolve_node_entry(room: Any, event: Any, args: str) -> NodeEntry | None:
     return _find_node_by_token(_build_node_index(interface), token)
 
 
-def _message_after_node_target(args: str) -> str:
-    _target, _separator, message = args.strip().partition(" ")
-    return message.strip()
-
-
 async def _handle_node_command(room: Any, event: Any, args: str) -> bool:
     entry = _resolve_node_entry(room, event, args)
     if entry is None:
@@ -559,42 +549,6 @@ async def _handle_node_command(room: Any, event: Any, args: str) -> bool:
         )
         return True
     await send_control_message(room.room_id, _entry_brief(entry))
-    return True
-
-
-async def _handle_ping_node_command(room: Any, event: Any, args: str) -> bool:
-    entry = _resolve_node_entry(room, event, args)
-    if entry is None:
-        await send_control_message(
-            room.room_id,
-            "Node not found. Run `nodes` or `find <query>`, then use `ping-node <number>`.",
-        )
-        return True
-
-    interface = _get_interface()
-    if interface is None:
-        await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
-        return True
-
-    success = facade.queue_message(
-        interface.sendText,
-        text="ping",
-        channelIndex=0,
-        destinationId=entry.node_id,
-        wantAck=True,
-        description=f"Ping node {entry.title}",
-    )
-    if not success:
-        await send_control_message(room.room_id, f"Failed to queue ping for {entry.title}.")
-        return True
-
-    await send_control_message(
-        room.room_id,
-        (
-            f"Queued ping for {entry.title}.\n"
-            "If that node or relay software replies to ping text, the response will arrive as a DM."
-        ),
-    )
     return True
 
 
@@ -609,36 +563,11 @@ async def _handle_dm_command(room: Any, event: Any, args: str) -> bool:
 
     client = getattr(facade, "matrix_client", None)
     interface = _get_interface()
-    if interface is None:
+    if client is None or interface is None:
         await send_control_message(room.room_id, "Matrix or Meshtastic client is not ready.")
         return True
 
-    dm_room_id = None
-    if client is not None:
-        dm_room_id = await facade.ensure_dm_room(client, interface, entry.node_id)
-    message = _message_after_node_target(args)
-    if message:
-        message = facade.truncate_message(message)
-        success = facade.queue_message(
-            interface.sendText,
-            text=message,
-            channelIndex=0,
-            destinationId=entry.node_id,
-            wantAck=True,
-            description=f"Direct message to {entry.title}",
-        )
-        if not success:
-            await send_control_message(
-                room.room_id,
-                f"Failed to queue direct message for {entry.title}.",
-            )
-            return True
-        room_hint = f"\nroom: {dm_room_id}" if dm_room_id else ""
-        await send_control_message(
-            room.room_id,
-            f"Queued direct message for {entry.title}.{room_hint}",
-        )
-        return True
+    dm_room_id = await facade.ensure_dm_room(client, interface, entry.node_id)
 
     if not dm_room_id:
         await send_control_message(room.room_id, f"Failed to create DM room for {entry.title}.")
@@ -895,19 +824,15 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
         return await _handle_find_command(room, event, args)
     if command.casefold() == "node":
         return await _handle_node_command(room, event, args)
-    if command.casefold() in {"ping-node", "pingnode"}:
-        return await _handle_ping_node_command(room, event, args)
     if command.casefold() == "dm":
         return await _handle_dm_command(room, event, args)
     if command.casefold() == "channels":
         return await _handle_channels_command(room)
-    if command.casefold() in {"ch", "send"}:
-        return await _handle_channel_send_command(room, args)
     if command.casefold() == "rooms":
         return await _handle_rooms_command(room)
     if command.casefold() == "status":
         return await _handle_status_command(room)
-    if command.casefold() in {"refresh", "resync"}:
+    if command.casefold() == "refresh":
         return await _handle_refresh_command(room)
 
     from mmrelay.plugin_loader import load_plugins

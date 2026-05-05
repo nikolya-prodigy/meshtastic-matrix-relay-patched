@@ -11,11 +11,30 @@ from nio import (
     RoomMessageText,
 )
 
+from mmrelay.constants.domain import ONLINE_NODE_WINDOW_SECONDS
 from mmrelay.constants.plugins import LOW_BATTERY_THRESHOLD_PERCENT
 from mmrelay.log_utils import get_logger
 from mmrelay.plugins.base_plugin import BasePlugin
 
 logger = get_logger(__name__)
+
+
+def _last_heard_timestamp(info: dict[str, Any]) -> float:
+    value = info.get("lastHeard")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return -1
+    return parsed if parsed > 0 else -1
+
+
+def _is_online(info: dict[str, Any]) -> bool:
+    import time
+
+    timestamp = _last_heard_timestamp(info)
+    if timestamp <= 0:
+        return False
+    return 0 <= time.time() - timestamp <= ONLINE_NODE_WINDOW_SECONDS
 
 if TYPE_CHECKING:
     from meshtastic.mesh_interface import MeshInterface
@@ -67,6 +86,8 @@ class Plugin(BasePlugin):
             return "No nodes discovered yet."
 
         for _node, info in meshtastic_client.nodes.items():
+            if not isinstance(info, dict):
+                continue
             if "deviceMetrics" in info:
                 if "batteryLevel" in info["deviceMetrics"]:
                     battery_levels.append(info["deviceMetrics"]["batteryLevel"])
@@ -81,14 +102,23 @@ class Plugin(BasePlugin):
         snr = [value for value in snr if value is not None]
 
         # Check if any health metrics are available
+        radios = len(meshtastic_client.nodes)
+        online_radios = len(
+            [
+                info
+                for info in meshtastic_client.nodes.values()
+                if isinstance(info, dict) and _is_online(info)
+            ]
+        )
         if not battery_levels and not air_util_tx and not snr:
-            radios = len(meshtastic_client.nodes)
-            return f"Nodes: {radios}\nNo nodes with health metrics found."
+            return (
+                f"Nodes: {radios} / Online {online_radios}\n"
+                "No nodes with health metrics found."
+            )
 
         low_battery = len(
             [n for n in battery_levels if n <= LOW_BATTERY_THRESHOLD_PERCENT]
         )
-        radios = len(meshtastic_client.nodes)
         avg_battery = statistics.mean(battery_levels) if battery_levels else 0
         mdn_battery = statistics.median(battery_levels) if battery_levels else 0
         avg_air = statistics.mean(air_util_tx) if air_util_tx else 0
@@ -115,11 +145,13 @@ class Plugin(BasePlugin):
         else:
             battery_line = "Battery: N/A"
 
-        return f"""Nodes: {radios}
- {battery_line}
- Nodes with Low Battery (<= {LOW_BATTERY_THRESHOLD_PERCENT}%): {low_battery}
- {air_util_line}
- {snr_line}"""
+        return (
+            f"Nodes: {radios} / Online {online_radios}\n"
+            f"{battery_line}\n"
+            f"Nodes with Low Battery (<= {LOW_BATTERY_THRESHOLD_PERCENT}%): {low_battery}\n"
+            f"{air_util_line}\n"
+            f"{snr_line}"
+        )
 
     async def handle_meshtastic_message(
         self,
