@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import inspect
 import logging
@@ -139,7 +140,7 @@ def _coerce_bool(value: Any, default: bool, setting_name: str) -> bool:
 
 def _submit_coro(
     coro: Any,
-    loop: facade.asyncio.AbstractEventLoop | None = None,
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> Future[Any] | None:
     """
     Schedule a coroutine or awaitable on an available asyncio event loop and return a Future for its result.
@@ -227,7 +228,7 @@ def _submit_coro(
 
 
 def _fire_and_forget(
-    coro: Coroutine[Any, Any, Any], loop: facade.asyncio.AbstractEventLoop | None = None
+    coro: Coroutine[Any, Any, Any], loop: asyncio.AbstractEventLoop | None = None
 ) -> None:
     """
     Schedule a coroutine to run in the background and log any non-cancellation exceptions.
@@ -243,15 +244,16 @@ def _fire_and_forget(
 
     task = facade._submit_coro(coro, loop=loop)
     if task is None:
+        coro.close()
         return
 
-    def _handle_exception(t: facade.asyncio.Future[Any] | Future[Any]) -> None:
+    def _handle_exception(t: asyncio.Future[Any] | Future[Any]) -> None:
         """
         Log non-cancellation exceptions raised by a fire-and-forget task.
 
         If the provided task or future has an exception and it is not an
-        facade.asyncio.CancelledError, logs the exception at error level including the
-        traceback. If retrieving the exception raises facade.asyncio.CancelledError it is
+        asyncio.CancelledError, logs the exception at error level including the
+        traceback. If retrieving the exception raises asyncio.CancelledError it is
         ignored; other errors encountered while inspecting the future are logged at
         debug level.
 
@@ -274,7 +276,7 @@ def _fire_and_forget(
 
 
 def _make_awaitable(
-    future: Any, loop: facade.asyncio.AbstractEventLoop | None = None
+    future: Any, loop: asyncio.AbstractEventLoop | None = None
 ) -> Awaitable[Any] | Any:
     """
     Convert a future-like object into an awaitable, optionally binding it to a given event loop.
@@ -283,7 +285,7 @@ def _make_awaitable(
 
     Parameters:
         future: A future-like object or an awaitable.
-        loop (facade.asyncio.AbstractEventLoop | None): Event loop to bind non-awaitable futures to; if `None`, no explicit loop binding is applied.
+        loop (asyncio.AbstractEventLoop | None): Event loop to bind non-awaitable futures to; if `None`, no explicit loop binding is applied.
 
     Returns:
         An awaitable that yields the resolved value of `future`, or `future` itself if it already supports awaiting.
@@ -492,7 +494,7 @@ def _run_blocking_with_timeout(
 def _wait_for_result(
     result_future: Any,
     timeout: float,
-    loop: facade.asyncio.AbstractEventLoop | None = None,
+    loop: asyncio.AbstractEventLoop | None = None,
 ) -> Any:
     """
     Wait for and return the resolved value of a future-like or awaitable object, enforcing a timeout.
