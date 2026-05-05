@@ -327,8 +327,62 @@ def test_on_meshtastic_message_portals_mode_formats_channel_message():
     assert mock_relay is not None
     mock_relay.assert_awaited_once()
     assert mock_relay.await_args.args[1] == (
-        "Short: Hello\n\nlink: 2 hops, snr -7.2 dB, rssi -89"
+        "Short: Hello\n\nlink: LoRa, 2 hops, SNR -7.2 dB, RSSI -89 dBm"
     )
+
+
+@pytest.mark.usefixtures("reset_meshtastic_globals")
+def test_on_meshtastic_message_portals_mode_formats_mqtt_and_relay_node():
+    config = _base_config()
+    config["meshtastic_portals"] = {"enabled": True}
+    config["matrix_rooms"][0]["meshtastic_portal_type"] = "channel"
+    _set_globals(config)
+    packet = _base_packet()
+    packet.update(
+        {
+            "rxSnr": -16.5,
+            "rxRssi": -87,
+            "hopStart": 3,
+            "hopLimit": 1,
+            "relayNode": 12,
+            "viaMqtt": True,
+        }
+    )
+
+    with _patch_message_deps(patch_logger=False) as (_mock_logger, mock_relay):
+        on_meshtastic_message(packet, _make_interface())
+
+    assert mock_relay is not None
+    mock_relay.assert_awaited_once()
+    assert mock_relay.await_args.args[1] == (
+        "Short: Hello\n\nlink: MQTT, 2 hops, SNR -16.5 dB, RSSI -87 dBm, relay #12"
+    )
+
+
+@pytest.mark.usefixtures("reset_meshtastic_globals")
+def test_on_meshtastic_message_portals_reply_keeps_matrix_reply_and_link_details():
+    config = _base_config()
+    config["meshtastic_portals"] = {"enabled": True}
+    config["matrix_rooms"][0]["meshtastic_portal_type"] = "channel"
+    _set_globals(config)
+    packet = _base_packet()
+    packet.update({"rxSnr": -7.25, "rxRssi": -89, "hopStart": 2, "hopLimit": 1})
+    packet["decoded"]["replyId"] = 77
+
+    with _patch_message_deps(
+        interaction_settings={"reactions": False, "replies": True},
+        message_map=("$orig", "!room:test", "Original", "TestNet"),
+        patch_logger=False,
+    ) as (_mock_logger, mock_relay):
+        on_meshtastic_message(packet, _make_interface())
+
+    assert mock_relay is not None
+    mock_relay.assert_awaited_once()
+    assert mock_relay.await_args.args[0] == "!room:test"
+    assert mock_relay.await_args.args[1] == (
+        "Short: Hello\n\nlink: LoRa, 1 hop, SNR -7.2 dB, RSSI -89 dBm"
+    )
+    assert mock_relay.await_args.kwargs["reply_to_event_id"] == "$orig"
 
 
 @pytest.mark.usefixtures("reset_meshtastic_globals")

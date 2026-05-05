@@ -62,6 +62,12 @@ def _is_channel_relay_room(room: Any) -> bool:
 
 def _packet_link_details(packet: dict[str, Any]) -> str:
     parts: list[str] = []
+    via_mqtt = packet.get("viaMqtt") or packet.get("via_mqtt")
+    if via_mqtt:
+        parts.append("MQTT")
+    else:
+        parts.append("LoRa")
+
     hop_start = packet.get("hopStart")
     hop_limit = packet.get("hopLimit")
     try:
@@ -79,16 +85,16 @@ def _packet_link_details(packet: dict[str, Any]) -> str:
     snr = packet.get("rxSnr")
     if snr is not None:
         try:
-            parts.append(f"snr {float(snr):.1f} dB")
+            parts.append(f"SNR {float(snr):.1f} dB")
         except (TypeError, ValueError):
-            parts.append(f"snr {snr}")
+            parts.append(f"SNR {snr}")
     rssi = packet.get("rxRssi")
     if rssi is not None:
-        parts.append(f"rssi {rssi}")
+        parts.append(f"RSSI {rssi} dBm")
 
     relay_node = packet.get("relayNode")
     if relay_node not in (None, 0, "0"):
-        parts.append(f"via {relay_node}")
+        parts.append(f"relay #{relay_node}")
     return ", ".join(parts)
 
 
@@ -926,7 +932,11 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
             prefix = get_matrix_prefix(
                 facade.config, longname, shortname, meshtastic_meshnet or meshnet_name
             )
-            formatted_message = f"{prefix}{text}"
+            formatted_message = (
+                _format_portal_channel_message(text, shortname, longname, packet)
+                if _portals_enabled()
+                else f"{prefix}{text}"
+            )
 
             facade.logger.info(f"Relaying Meshtastic reply from {longname} to Matrix")
 
