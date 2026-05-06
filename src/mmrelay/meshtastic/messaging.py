@@ -171,22 +171,13 @@ def send_text_reply(
         facade.logger.error("No Meshtastic interface available for sending reply")
         return None
 
-    # Create the Data protobuf message with reply_id set
-    data_msg = facade.mesh_pb2.Data()
-    data_msg.portnum = facade.portnums_pb2.PortNum.TEXT_MESSAGE_APP
-    data_msg.payload = text.encode(facade.MESHTASTIC_TEXT_ENCODING)
-    data_msg.reply_id = reply_id
-
-    # Create the MeshPacket
-    mesh_packet = facade.mesh_pb2.MeshPacket()
-    mesh_packet.channel = channelIndex
-    mesh_packet.decoded.CopyFrom(data_msg)
-    mesh_packet.id = interface._generatePacketId()
-
-    # Send the packet using the existing infrastructure
     try:
-        return interface._sendPacket(
-            mesh_packet, destinationId=destinationId, wantAck=wantAck
+        return interface.sendText(
+            text,
+            destinationId=destinationId,
+            wantAck=wantAck,
+            channelIndex=channelIndex,
+            replyId=reply_id,
         )
     except (
         AttributeError,

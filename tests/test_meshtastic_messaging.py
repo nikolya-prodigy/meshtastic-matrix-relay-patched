@@ -88,8 +88,7 @@ class TestSendTextReply:
         from mmrelay.meshtastic.messaging import send_text_reply
 
         iface = MagicMock()
-        iface._generatePacketId.return_value = 42
-        iface._sendPacket.side_effect = SystemExit(0)
+        iface.sendText.side_effect = SystemExit(0)
         with pytest.raises(SystemExit):
             send_text_reply(iface, "hello", 123)
 
@@ -97,8 +96,7 @@ class TestSendTextReply:
         from mmrelay.meshtastic.messaging import send_text_reply
 
         iface = MagicMock()
-        iface._generatePacketId.return_value = 42
-        iface._sendPacket.side_effect = OSError("fail")
+        iface.sendText.side_effect = OSError("fail")
         result = send_text_reply(iface, "hello", 123)
         assert result is None
 

@@ -190,6 +190,19 @@ async def test_matrix_relay_simple_message(
     assert content["meshtastic_portnum"] == 1
 
 
+async def test_format_meshtastic_portal_html_separates_link_details():
+    from mmrelay.matrix.relay import _format_meshtastic_portal_html
+
+    formatted = _format_meshtastic_portal_html(
+        "2b4c: hello\n\nlink: LoRa, 2 hops, SNR -9.2 dB, RSSI -102 dBm"
+    )
+
+    assert formatted == (
+        "<strong>2b4c:</strong> hello<br/><br/>"
+        "<code>link: LoRa, 2 hops, SNR -9.2 dB, RSSI -102 dBm</code>"
+    )
+
+
 @patch("mmrelay.matrix_utils.config", {"meshtastic": {"meshnet_name": "TestMesh"}})
 @patch("mmrelay.matrix_utils.connect_matrix")
 @patch("mmrelay.matrix_utils.get_interaction_settings")

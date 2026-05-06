@@ -998,23 +998,27 @@ class TestMeshtasticUtils(unittest.TestCase):
         """
         Test that send_text_reply returns the expected result when sending a text reply succeeds.
 
-        Verifies that the function correctly calls the interface methods and returns the response from _sendPacket.
+        Verifies that the function correctly calls the interface sendText helper with replyId.
         """
         # Create a mock interface
         mock_interface = MagicMock()
-        mock_interface._generatePacketId.return_value = 12345
-        mock_interface._sendPacket.return_value = {"id": 12345}
+        mock_interface.sendText.return_value = {"id": 12345}
 
         result = send_text_reply(
             mock_interface, "Hello", 999, destinationId="123456789"
         )
 
-        # Should return the result from _sendPacket
+        # Should return the result from sendText
         self.assertEqual(result, {"id": 12345})
 
         # Verify the interface methods were called
-        mock_interface._generatePacketId.assert_called_once()
-        mock_interface._sendPacket.assert_called_once()
+        mock_interface.sendText.assert_called_once_with(
+            "Hello",
+            destinationId="123456789",
+            wantAck=False,
+            channelIndex=0,
+            replyId=999,
+        )
 
     def test_send_text_reply_no_client(self):
         """
@@ -1022,8 +1026,7 @@ class TestMeshtasticUtils(unittest.TestCase):
         """
         # Create a mock interface that fails
         mock_interface = MagicMock()
-        mock_interface._generatePacketId.return_value = 12345
-        mock_interface._sendPacket.return_value = None  # Simulate failure
+        mock_interface.sendText.return_value = None  # Simulate failure
 
         result = send_text_reply(
             mock_interface, "Hello", 999, destinationId="123456789"

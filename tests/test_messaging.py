@@ -267,11 +267,16 @@ class TestGetNodeDisplayName:
 class TestSendTextReply:
     def test_send_text_reply_success(self):
         interface = MagicMock()
-        interface._generatePacketId.return_value = 42
-        interface._sendPacket.return_value = "sent"
+        interface.sendText.return_value = "sent"
         result = send_text_reply(interface, "Hello", 100)
         assert result == "sent"
-        interface._sendPacket.assert_called_once()
+        interface.sendText.assert_called_once_with(
+            "Hello",
+            destinationId="^all",
+            wantAck=False,
+            channelIndex=0,
+            replyId=100,
+        )
 
     def test_send_text_reply_none_interface(self):
         with patch("mmrelay.meshtastic.messaging.facade.logger") as mock_logger:
@@ -281,48 +286,42 @@ class TestSendTextReply:
 
     def test_send_text_reply_send_raises_os_error(self):
         interface = MagicMock()
-        interface._generatePacketId.return_value = 42
-        interface._sendPacket.side_effect = OSError("send failed")
+        interface.sendText.side_effect = OSError("send failed")
         with patch("mmrelay.meshtastic.messaging.facade.logger"):
             result = send_text_reply(interface, "Hello", 100)
             assert result is None
 
     def test_send_text_reply_send_raises_runtime_error(self):
         interface = MagicMock()
-        interface._generatePacketId.return_value = 42
-        interface._sendPacket.side_effect = RuntimeError("runtime error")
+        interface.sendText.side_effect = RuntimeError("runtime error")
         with patch("mmrelay.meshtastic.messaging.facade.logger"):
             result = send_text_reply(interface, "Hello", 100)
             assert result is None
 
     def test_send_text_reply_send_raises_attribute_error(self):
         interface = MagicMock()
-        interface._generatePacketId.return_value = 42
-        interface._sendPacket.side_effect = AttributeError("no method")
+        interface.sendText.side_effect = AttributeError("no method")
         with patch("mmrelay.meshtastic.messaging.facade.logger"):
             result = send_text_reply(interface, "Hello", 100)
             assert result is None
 
     def test_send_text_reply_send_raises_type_error(self):
         interface = MagicMock()
-        interface._generatePacketId.return_value = 42
-        interface._sendPacket.side_effect = TypeError("type error")
+        interface.sendText.side_effect = TypeError("type error")
         with patch("mmrelay.meshtastic.messaging.facade.logger"):
             result = send_text_reply(interface, "Hello", 100)
             assert result is None
 
     def test_send_text_reply_send_raises_value_error(self):
         interface = MagicMock()
-        interface._generatePacketId.return_value = 42
-        interface._sendPacket.side_effect = ValueError("value error")
+        interface.sendText.side_effect = ValueError("value error")
         with patch("mmrelay.meshtastic.messaging.facade.logger"):
             result = send_text_reply(interface, "Hello", 100)
             assert result is None
 
     def test_send_text_reply_system_exit_propagates(self):
         interface = MagicMock()
-        interface._generatePacketId.return_value = 42
-        interface._sendPacket.side_effect = SystemExit(0)
+        interface.sendText.side_effect = SystemExit(0)
         with (
             patch("mmrelay.meshtastic.messaging.facade.logger"),
             pytest.raises(SystemExit),
@@ -331,8 +330,7 @@ class TestSendTextReply:
 
     def test_send_text_reply_custom_params(self):
         interface = MagicMock()
-        interface._generatePacketId.return_value = 42
-        interface._sendPacket.return_value = "sent"
+        interface.sendText.return_value = "sent"
         result = send_text_reply(
             interface,
             "Reply",
@@ -342,9 +340,13 @@ class TestSendTextReply:
             channelIndex=3,
         )
         assert result == "sent"
-        call_kwargs = interface._sendPacket.call_args
-        assert call_kwargs[1]["destinationId"] == "^all"
-        assert call_kwargs[1]["wantAck"] is True
+        interface.sendText.assert_called_once_with(
+            "Reply",
+            destinationId="^all",
+            wantAck=True,
+            channelIndex=3,
+            replyId=200,
+        )
 
     def test_send_text_reply_alias(self):
         from mmrelay.meshtastic.messaging import sendTextReply

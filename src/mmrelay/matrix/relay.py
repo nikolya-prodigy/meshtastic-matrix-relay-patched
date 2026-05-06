@@ -16,6 +16,7 @@ import mmrelay.matrix_utils as facade
 
 __all__ = [
     "_get_e2ee_error_message",
+    "_format_meshtastic_portal_html",
     "_retry_backoff_delay",
     "_send_matrix_message_with_retry",
     "matrix_relay",
@@ -55,6 +56,31 @@ def _retry_backoff_delay(
         float: Delay in seconds to wait before the next retry; equals base_delay * 2**attempt_index capped at max_delay.
     """
     return min(base_delay * (2.0**attempt_index), max_delay)
+
+
+def _format_meshtastic_portal_html(message: str) -> str | None:
+    """Render Meshtastic portal messages with separated sender/body and link details."""
+    body, separator, link_details = message.partition("\n\nlink: ")
+    if not separator or not link_details:
+        return None
+
+    first_line, newline, rest = body.partition("\n")
+    if ": " in first_line:
+        sender, text = first_line.split(": ", 1)
+        body_html = (
+            f"<strong>{html.escape(sender)}:</strong> "
+            f"{html.escape(text)}"
+        )
+    else:
+        body_html = html.escape(first_line)
+
+    if newline:
+        body_html = f"{body_html}<br/>{html.escape(rest).replace(chr(10), '<br/>')}"
+
+    return (
+        f"{body_html}<br/><br/>"
+        f"<code>link: {html.escape(link_details)}</code>"
+    )
 
 
 async def _send_matrix_message_with_retry(
@@ -287,11 +313,15 @@ async def matrix_relay(
             facade.config, "meshnet_name", ""
         )
 
+        portal_formatted_body = _format_meshtastic_portal_html(message)
         has_html = bool(re.search(r"</?[a-zA-Z][^>]*>", message))
         safe_message, has_prefix = facade._escape_leading_prefix_for_markdown(message)
         has_markdown = bool(re.search(r"[*_`~]", message)) or has_prefix
 
-        if has_markdown or has_html:
+        if portal_formatted_body is not None:
+            formatted_body = portal_formatted_body
+            plain_body = message
+        elif has_markdown or has_html:
             try:
                 import bleach  # type: ignore[import-untyped]
                 import markdown
