@@ -9,6 +9,7 @@ __all__ = [
     "_get_portnum_name",
     "_normalize_room_channel",
     "sendTextReply",
+    "send_text_reaction",
     "send_text_reply",
 ]
 
@@ -187,6 +188,50 @@ def send_text_reply(
         ValueError,
     ):
         facade.logger.exception("Failed to send text reply")
+        return None
+    except SystemExit:
+        facade.logger.debug("SystemExit encountered, preserving for graceful shutdown")
+        raise
+
+
+def send_text_reaction(
+    interface: Any,
+    emoji: str,
+    reply_id: int,
+    destinationId: Any = facade.meshtastic.BROADCAST_ADDR,
+    wantAck: bool = False,
+    channelIndex: int = 0,
+) -> Any:
+    """Send a native Meshtastic emoji reaction to a previous text packet."""
+    if interface is None:
+        facade.logger.error("No Meshtastic interface available for sending reaction")
+        return None
+
+    generate_packet_id = getattr(interface, "_generate_packet_id", None)
+    send_packet = getattr(interface, "_send_packet", None)
+    if not callable(generate_packet_id) or not callable(send_packet):
+        facade.logger.error("Meshtastic interface does not support native reactions")
+        return None
+
+    try:
+        packet = facade.mesh_pb2.MeshPacket()
+        packet.channel = channelIndex
+        packet.decoded.payload = emoji.encode("utf-8")
+        packet.decoded.portnum = facade.portnums_pb2.PortNum.TEXT_MESSAGE_APP
+        packet.decoded.reply_id = reply_id
+        packet.decoded.emoji = facade.EMOJI_FLAG_VALUE
+        packet.id = generate_packet_id()
+        packet.priority = facade.mesh_pb2.MeshPacket.Priority.RELIABLE
+
+        return send_packet(packet, destinationId, wantAck=wantAck)
+    except (
+        AttributeError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ):
+        facade.logger.exception("Failed to send native Meshtastic reaction")
         return None
     except SystemExit:
         facade.logger.debug("SystemExit encountered, preserving for graceful shutdown")

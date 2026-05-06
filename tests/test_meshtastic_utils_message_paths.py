@@ -204,15 +204,14 @@ def test_on_meshtastic_message_reaction_missing_original():
         on_meshtastic_message(packet, _make_interface())
 
     assert mock_logger is not None
-    # Should warn about missing original but still relay as normal message
+    # Missing originals are not converted into ordinary text messages.
     mock_logger.warning.assert_any_call(
         "Original message for reaction (replyId=%s) not found in DB. "
-        "Relaying as normal message instead.",
+        "Not forwarding reaction.",
         42,
     )
-    # Message should be relayed as normal text message
     assert mock_relay is not None
-    mock_relay.assert_awaited_once()
+    mock_relay.assert_not_called()
 
 
 @pytest.mark.usefixtures("reset_meshtastic_globals")

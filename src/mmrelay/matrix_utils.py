@@ -110,7 +110,11 @@ from mmrelay.db_utils import (
 from mmrelay.log_utils import get_logger
 
 # Do not import plugin_loader here to avoid circular imports
-from mmrelay.meshtastic_utils import connect_meshtastic, send_text_reply
+from mmrelay.meshtastic_utils import (
+    connect_meshtastic,
+    send_text_reaction,
+    send_text_reply,
+)
 
 # Import meshtastic protobuf for port numbers when needed
 from mmrelay.message_queue import get_message_queue, queue_message
@@ -400,6 +404,7 @@ from mmrelay.matrix.relay import (
     _retry_backoff_delay,
     _send_matrix_message_with_retry,
     matrix_relay,
+    send_matrix_reaction,
 )
 from mmrelay.matrix.replies import (
     format_reply_message,

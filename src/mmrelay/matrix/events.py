@@ -50,6 +50,14 @@ def _meshtastic_destination_kwargs(room_config: dict[str, Any]) -> dict[str, Any
     return kwargs
 
 
+def _parse_meshtastic_reply_id(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
 def _portal_access_config(config: dict[str, Any] | None) -> dict[str, Any]:
     portals = config.get("meshtastic_portals") if isinstance(config, dict) else None
     access = portals.get("access") if isinstance(portals, dict) else None
@@ -402,74 +410,27 @@ async def on_room_message(
             )
 
     if is_reaction and interactions["reactions"]:
+        meshtastic_reply_id: int | None = None
+        reaction_description: str | None = None
         if (
             meshnet_name
             and meshnet_name != local_meshnet_name
             and meshtastic_replyId
             and isinstance(event, RoomMessageEmote)
         ):
-            facade.logger.info(f"Relaying reaction from remote meshnet: {meshnet_name}")
-
-            short_meshnet_name = meshnet_name[: facade.MESHNET_NAME_ABBREVIATION_LENGTH]
-
-            if not shortname:
-                shortname = (
-                    longname[: facade.SHORTNAME_FALLBACK_LENGTH] if longname else "???"
+            meshtastic_reply_id = _parse_meshtastic_reply_id(meshtastic_replyId)
+            if meshtastic_reply_id is None:
+                facade.logger.warning(
+                    "Remote reaction meshtastic_replyId %r is not numeric; not forwarding.",
+                    meshtastic_replyId,
                 )
-
-            meshtastic_text_db = event.source["content"].get("meshtastic_text", "")
-            meshtastic_text_db = facade.strip_quoted_lines(meshtastic_text_db)
-            meshtastic_text_db = meshtastic_text_db.replace("\n", " ").replace(
-                "\r", " "
-            )
-
-            abbreviated_text = (
-                meshtastic_text_db[: facade.MESSAGE_PREVIEW_LENGTH] + "..."
-                if len(meshtastic_text_db) > facade.MESSAGE_PREVIEW_LENGTH
-                else meshtastic_text_db
-            )
-
-            reaction_message = f'{shortname}/{short_meshnet_name} reacted {reaction_emoji} to "{abbreviated_text}"'
-
-            (
-                meshtastic_interface,
-                meshtastic_channel,
-            ) = await facade._get_meshtastic_interface_and_channel(
-                room_config, "relay reaction"
-            )
-            if not meshtastic_interface:
                 return
+            facade.logger.info(
+                "Relaying native reaction from remote meshnet %s", meshnet_name
+            )
+            reaction_description = f"Remote reaction from {meshnet_name}"
 
-            if facade.get_meshtastic_config_value(
-                facade.config,
-                "broadcast_enabled",
-                facade.DEFAULT_BROADCAST_ENABLED,
-                required=False,
-            ):
-                meshtastic_logger.info(
-                    f"Relaying reaction from remote meshnet {meshnet_name} to radio broadcast"
-                )
-                facade.logger.debug(
-                    f"Sending reaction to Meshtastic with meshnet={local_meshnet_name}: {reaction_message}"
-                )
-                success = facade.queue_message(
-                    meshtastic_interface.sendText,
-                    text=reaction_message,
-                    channelIndex=meshtastic_channel,
-                    **_meshtastic_destination_kwargs(room_config),
-                    description=f"Remote reaction from {meshnet_name}",
-                )
-
-                if success:
-                    facade.logger.debug(
-                        f"Queued remote reaction to Meshtastic: {reaction_message}"
-                    )
-                else:
-                    facade.logger.error("Failed to relay remote reaction to Meshtastic")
-                    return
-            return
-
-        if original_matrix_event_id:
+        elif original_matrix_event_id:
             orig = await asyncio.to_thread(
                 facade.get_message_map_by_matrix_event_id, original_matrix_event_id
             )
@@ -482,99 +443,63 @@ async def on_room_message(
             (
                 meshtastic_id_raw,
                 _matrix_room_id,
-                meshtastic_text_db,
+                _meshtastic_text_db,
                 _meshtastic_meshnet_db,
             ) = orig
 
-            if isinstance(meshtastic_id_raw, int):
-                meshtastic_reply_id = meshtastic_id_raw
-            elif isinstance(meshtastic_id_raw, str) and meshtastic_id_raw.isdigit():
-                meshtastic_reply_id = int(meshtastic_id_raw)
-            elif isinstance(meshtastic_id_raw, str):
+            meshtastic_reply_id = _parse_meshtastic_reply_id(meshtastic_id_raw)
+            if meshtastic_reply_id is None:
                 facade.logger.warning(
-                    "Message map meshtastic_id %r is not numeric; sending reaction as regular message",
+                    "Message map meshtastic_id %r is not numeric; not forwarding reaction.",
                     meshtastic_id_raw,
                 )
-                meshtastic_reply_id = None
-            else:
-                facade.logger.warning(
-                    "Message map meshtastic_id has unexpected type %s; sending reaction as regular message",
-                    type(meshtastic_id_raw).__name__,
-                )
-                meshtastic_reply_id = None
-
-            full_display_name = await facade.get_user_display_name(room, event)
-
-            prefix = facade.get_meshtastic_prefix(facade.config, full_display_name)
-
-            meshtastic_text_db = facade.strip_quoted_lines(meshtastic_text_db)
-            meshtastic_text_db = meshtastic_text_db.replace("\n", " ").replace(
-                "\r", " "
-            )
-
-            abbreviated_text = (
-                meshtastic_text_db[: facade.MESSAGE_PREVIEW_LENGTH] + "..."
-                if len(meshtastic_text_db) > facade.MESSAGE_PREVIEW_LENGTH
-                else meshtastic_text_db
-            )
-
-            reaction_message = (
-                f'{prefix}reacted {reaction_emoji} to "{abbreviated_text}"'
-            )
-            (
-                meshtastic_interface,
-                meshtastic_channel,
-            ) = await facade._get_meshtastic_interface_and_channel(
-                room_config, "relay reaction"
-            )
-            if not meshtastic_interface:
                 return
-
-            if facade.get_meshtastic_config_value(
-                facade.config,
-                "broadcast_enabled",
-                facade.DEFAULT_BROADCAST_ENABLED,
-                required=False,
-            ):
-                if meshtastic_reply_id is not None:
-                    meshtastic_logger.info(
-                        f"Relaying reaction from {full_display_name} to radio broadcast as reply"
-                    )
-                    facade.logger.debug(
-                        f"Sending reaction reply to Meshtastic message {meshtastic_reply_id}: {reaction_message}"
-                    )
-                    success = facade.queue_message(
-                        facade.send_text_reply,
-                        interface=meshtastic_interface,
-                        text=reaction_message,
-                        reply_id=meshtastic_reply_id,
-                        channelIndex=meshtastic_channel,
-                        **_meshtastic_destination_kwargs(room_config),
-                        description=f"Local reaction from {full_display_name} (reply to {meshtastic_reply_id})",
-                    )
-                else:
-                    meshtastic_logger.info(
-                        f"Relaying reaction from {full_display_name} to radio broadcast"
-                    )
-                    facade.logger.debug(
-                        f"Sending reaction to Meshtastic with meshnet={local_meshnet_name}: {reaction_message}"
-                    )
-                    success = facade.queue_message(
-                        meshtastic_interface.sendText,
-                        text=reaction_message,
-                        channelIndex=meshtastic_channel,
-                        **_meshtastic_destination_kwargs(room_config),
-                        description=f"Local reaction from {full_display_name}",
-                    )
-
-                if success:
-                    facade.logger.debug(
-                        f"Queued local reaction to Meshtastic: {reaction_message}"
-                    )
-                else:
-                    facade.logger.error("Failed to relay local reaction to Meshtastic")
-                    return
+        else:
+            facade.logger.debug("Reaction has no related Matrix event; not forwarding.")
             return
+
+        if not reaction_emoji:
+            facade.logger.debug("Reaction has no emoji key; not forwarding.")
+            return
+
+        (
+            meshtastic_interface,
+            meshtastic_channel,
+        ) = await facade._get_meshtastic_interface_and_channel(
+            room_config, "relay reaction"
+        )
+        if not meshtastic_interface:
+            return
+
+        if facade.get_meshtastic_config_value(
+            facade.config,
+            "broadcast_enabled",
+            facade.DEFAULT_BROADCAST_ENABLED,
+            required=False,
+        ):
+            if reaction_description:
+                full_display_name = meshnet_name or "remote meshnet"
+            else:
+                full_display_name = await facade.get_user_display_name(room, event)
+                reaction_description = (
+                    f"Local reaction from {full_display_name} "
+                    f"(reply to {meshtastic_reply_id})"
+                )
+            meshtastic_logger.info(
+                "Relaying native reaction from %s to Meshtastic", full_display_name
+            )
+            success = facade.queue_message(
+                facade.send_text_reaction,
+                interface=meshtastic_interface,
+                emoji=reaction_emoji,
+                reply_id=meshtastic_reply_id,
+                channelIndex=meshtastic_channel,
+                **_meshtastic_destination_kwargs(room_config),
+                description=reaction_description,
+            )
+            if not success:
+                facade.logger.error("Failed to relay native reaction to Meshtastic")
+        return
 
     if is_reply and reply_to_event_id and interactions["replies"]:
         reply_handled = await facade.handle_matrix_reply(

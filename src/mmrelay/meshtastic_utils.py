@@ -446,6 +446,7 @@ from mmrelay.meshtastic.messaging import (
     _get_packet_details,
     _get_portnum_name,
     _normalize_room_channel,
+    send_text_reaction,
     send_text_reply,
     sendTextReply,
 )

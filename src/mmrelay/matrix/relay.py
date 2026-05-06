@@ -13,6 +13,7 @@ from typing import Any, cast
 from nio import RoomSendError
 
 import mmrelay.matrix_utils as facade
+from mmrelay.constants.formats import MATRIX_SUPPRESS_KEY
 
 __all__ = [
     "_get_e2ee_error_message",
@@ -20,6 +21,7 @@ __all__ = [
     "_retry_backoff_delay",
     "_send_matrix_message_with_retry",
     "matrix_relay",
+    "send_matrix_reaction",
 ]
 
 
@@ -37,6 +39,32 @@ async def _get_e2ee_error_message() -> str:
     )
 
     return cast(str, facade.get_e2ee_error_message(dict(e2ee_status)))
+
+
+async def send_matrix_reaction(room_id: str, event_id: str, emoji: str) -> None:
+    """Send a native Matrix reaction to an event."""
+    matrix_client = await facade.connect_matrix()
+    if matrix_client is None:
+        facade.logger.error("Failed to connect to Matrix client")
+        return
+
+    content: dict[str, Any] = {
+        "m.relates_to": {
+            "rel_type": "m.annotation",
+            "event_id": event_id,
+            "key": emoji,
+        },
+        MATRIX_SUPPRESS_KEY: True,
+    }
+    try:
+        await matrix_client.room_send(
+            room_id=room_id,
+            message_type="m.reaction",
+            content=content,
+            ignore_unverified_devices=True,
+        )
+    except Exception:
+        facade.logger.warning("Failed to send Matrix reaction", exc_info=True)
 
 
 def _retry_backoff_delay(

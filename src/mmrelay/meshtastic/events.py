@@ -854,7 +854,7 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
             )
             return
 
-    from mmrelay.matrix_utils import matrix_relay
+    from mmrelay.matrix_utils import matrix_relay, send_matrix_reaction
 
     if facade.shutting_down:
         facade.logger.debug("Shutdown in progress. Ignoring incoming messages.")
@@ -904,60 +904,28 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
         and emoji_flag
         and interactions["reactions"]
     ):
-        longname = facade._get_name_safely(facade.get_longname, sender)
-        shortname = facade._get_name_safely(facade.get_shortname, sender)
         orig = facade.get_message_map_by_meshtastic_id(replyId)
         if orig:
             # orig = (matrix_event_id, matrix_room_id, meshtastic_text, meshtastic_meshnet)
-            matrix_event_id, matrix_room_id, meshtastic_text, meshtastic_meshnet = orig
-            abbreviated_text = (
-                meshtastic_text[:40] + "..."
-                if len(meshtastic_text) > 40
-                else meshtastic_text
-            )
-
-            # Import the matrix prefix function
-            from mmrelay.matrix_utils import get_matrix_prefix
-
-            # Get the formatted prefix for the reaction
-            prefix = get_matrix_prefix(
-                facade.config, longname, shortname, meshtastic_meshnet or meshnet_name
-            )
-
+            matrix_event_id, matrix_room_id, _meshtastic_text, _meshtastic_meshnet = orig
             reaction_symbol = text.strip() if (text and text.strip()) else "⚠️"
-            reaction_message = (
-                f'\n {prefix}reacted {reaction_symbol} to "{abbreviated_text}"'
-            )
 
-            # Relay the reaction as emote to Matrix, preserving the original meshnet name
             facade._fire_and_forget(
-                matrix_relay(
+                send_matrix_reaction(
                     matrix_room_id,
-                    reaction_message,
-                    longname,
-                    shortname,
-                    meshtastic_meshnet or meshnet_name,
-                    decoded.get("portnum", 0),
-                    meshtastic_id=packet.get("id"),
-                    meshtastic_replyId=replyId,
-                    meshtastic_text=meshtastic_text,
-                    emote=True,
-                    emoji=True,
+                    matrix_event_id,
+                    reaction_symbol,
                 ),
                 loop=loop,
             )
             return
         else:
-            # Original message not found - fall through to normal text handling
-            # This can happen with:
-            # - Replies to messages from before the relay started
-            # - Cross-meshnet replies where original not in our DB
-            # - Signed IDs that don't match (packet from another node/source)
             facade.logger.warning(
                 "Original message for reaction (replyId=%s) not found in DB. "
-                "Relaying as normal message instead.",
+                "Not forwarding reaction.",
                 replyId,
             )
+            return
 
     # Reply handling (Meshtastic -> Matrix)
     # Only for RELAY-classified TEXT_MESSAGE_APP packets.

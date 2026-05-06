@@ -26,7 +26,7 @@ from mmrelay.matrix_utils import (
     bot_command,
     matrix_relay,
     on_room_message,
-    send_text_reply,
+    send_text_reaction,
 )
 from tests.constants import (
     TEST_BOT_USER_ID,
@@ -1239,9 +1239,7 @@ async def test_on_room_message_reply_disabled(
 async def test_on_room_message_reaction_enabled(mock_room, test_config):
     # This is a reaction event
     """
-    Verify that a Matrix reaction event is converted into a Meshtastic relay message and queued when reaction interactions are enabled.
-
-    Asserts that a reaction produces a queued relay entry with a description indicating a local reaction and text that denotes a reacted state.
+    Verify that a Matrix reaction event is queued as a native Meshtastic reaction.
     """
     from nio import ReactionEvent
 
@@ -1322,8 +1320,8 @@ async def test_on_room_message_reaction_enabled(mock_room, test_config):
         queued_kwargs = mock_queue_message.call_args.kwargs
         assert queued_kwargs["description"].startswith("Local reaction")
         assert queued_kwargs["reply_id"] == 12345
-        assert "reacted" in queued_kwargs["text"]
-        assert queued_args[0] is send_text_reply
+        assert queued_kwargs["emoji"] == "👍"
+        assert queued_args[0] is send_text_reaction
 
 
 async def test_on_room_message_reaction_non_numeric_meshtastic_id(
@@ -1406,12 +1404,7 @@ async def test_on_room_message_reaction_non_numeric_meshtastic_id(
     ):
         await on_room_message(mock_room, mock_event)
 
-        mock_queue_message.assert_called_once()
-        queued_args = mock_queue_message.call_args.args
-        queued_kwargs = mock_queue_message.call_args.kwargs
-        assert "reacted" in queued_kwargs["text"]
-        assert "reply_id" not in queued_kwargs
-        assert queued_args[0] is mock_meshtastic.sendText
+        mock_queue_message.assert_not_called()
     assert any(
         "is not numeric" in call.args[0] for call in mock_logger.warning.call_args_list
     )
@@ -1492,14 +1485,14 @@ async def test_on_room_message_reaction_mapped_int_id(mock_room, test_config):
         queued_kwargs = mock_queue_message.call_args.kwargs
         assert queued_kwargs["description"].startswith("Local reaction")
         assert queued_kwargs["reply_id"] == 12345
-        assert "reacted" in queued_kwargs["text"]
-        assert queued_args[0] is send_text_reply
+        assert queued_kwargs["emoji"] == "👍"
+        assert queued_args[0] is send_text_reaction
 
 
 async def test_on_room_message_reaction_unexpected_type_logs_warning(
     mock_room, test_config
 ):
-    """A non-int, non-str meshtastic_id should log a type warning and fall back to sendText."""
+    """A non-int, non-str meshtastic_id should not be relayed as a reaction."""
     from nio import ReactionEvent
 
     class MockReactionEvent(ReactionEvent):
@@ -1570,14 +1563,9 @@ async def test_on_room_message_reaction_unexpected_type_logs_warning(
     ):
         await on_room_message(mock_room, mock_event)
 
-        mock_queue_message.assert_called_once()
-        queued_args = mock_queue_message.call_args.args
-        queued_kwargs = mock_queue_message.call_args.kwargs
-        assert "reacted" in queued_kwargs["text"]
-        assert "reply_id" not in queued_kwargs
-        assert queued_args[0] is mock_meshtastic.sendText
+        mock_queue_message.assert_not_called()
     assert any(
-        "has unexpected type" in call.args[0]
+        "is not numeric" in call.args[0]
         for call in mock_logger.warning.call_args_list
     )
 
@@ -2104,8 +2092,11 @@ async def test_on_room_message_remote_reaction_relay_success(monkeypatch, mock_r
         await on_room_message(mock_room, mock_event)
 
     mock_queue.assert_called_once()
+    queued_args = mock_queue.call_args.args
     queued_kwargs = mock_queue.call_args.kwargs
-    assert "reacted" in queued_kwargs["text"]
+    assert queued_args[0] is send_text_reaction
+    assert queued_kwargs["emoji"] == ":)"
+    assert queued_kwargs["reply_id"] == 123
     assert queued_kwargs["description"] == "Remote reaction from remote_mesh"
 
 
@@ -2228,7 +2219,7 @@ async def test_on_room_message_local_reaction_queue_failure_logs(
         await on_room_message(mock_room, mock_event)
 
     mock_queue.assert_called_once()
-    mock_logger.error.assert_any_call("Failed to relay local reaction to Meshtastic")
+    mock_logger.error.assert_any_call("Failed to relay native reaction to Meshtastic")
 
 
 async def test_on_room_message_reply_handled_short_circuits(
@@ -2669,7 +2660,7 @@ async def test_on_room_message_emote_reaction_uses_original_event_id(monkeypatch
         raising=False,
     )
 
-    mapping = ("mesh_id", room_id, "text", "meshnet")
+    mapping = (123, room_id, "text", "meshnet")
     get_map_mock = MagicMock(return_value=mapping)
     monkeypatch.setattr(
         "mmrelay.matrix_utils.get_message_map_by_matrix_event_id",
@@ -2707,6 +2698,7 @@ async def test_on_room_message_emote_reaction_uses_original_event_id(monkeypatch
 
     get_map_mock.assert_called_once_with("orig_evt")
     queue_mock.assert_called()
+    assert queue_mock.call_args.args[0] is send_text_reaction
 
 
 async def test_on_room_message_command_short_circuits(

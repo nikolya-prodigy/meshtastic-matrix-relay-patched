@@ -6,6 +6,7 @@ from mmrelay.meshtastic.messaging import (
     _get_node_display_name,
     _get_packet_details,
     _normalize_room_channel,
+    send_text_reaction,
     send_text_reply,
 )
 
@@ -352,3 +353,29 @@ class TestSendTextReply:
         from mmrelay.meshtastic.messaging import sendTextReply
 
         assert sendTextReply is send_text_reply
+
+
+class TestSendTextReaction:
+    def test_send_text_reaction_success(self):
+        interface = MagicMock()
+        interface._generate_packet_id.return_value = 123456
+        interface._send_packet.return_value = "sent"
+
+        result = send_text_reaction(interface, "👍", 100, channelIndex=2)
+
+        assert result == "sent"
+        packet = interface._send_packet.call_args.args[0]
+        assert packet.id == 123456
+        assert packet.channel == 2
+        assert packet.decoded.payload == "👍".encode("utf-8")
+        assert packet.decoded.reply_id == 100
+        assert packet.decoded.emoji == 1
+        interface._send_packet.assert_called_once()
+
+    def test_send_text_reaction_requires_native_packet_support(self):
+        interface = object()
+        with patch("mmrelay.meshtastic.messaging.facade.logger") as mock_logger:
+            result = send_text_reaction(interface, "👍", 100)
+
+        assert result is None
+        mock_logger.error.assert_called_once()

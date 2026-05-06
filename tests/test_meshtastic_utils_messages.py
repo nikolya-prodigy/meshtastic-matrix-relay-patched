@@ -529,10 +529,9 @@ class TestMeshtasticUtils(unittest.TestCase):
                 "mmrelay.meshtastic_utils.get_message_map_by_meshtastic_id",
                 return_value=("evt1", "!room1:matrix.org", "orig text", "mesh"),
             ),
-            patch("mmrelay.matrix_utils.get_matrix_prefix", return_value="[prefix] "),
             patch(
-                "mmrelay.matrix_utils.matrix_relay", new_callable=AsyncMock
-            ) as mock_matrix_relay,
+                "mmrelay.matrix_utils.send_matrix_reaction", new_callable=AsyncMock
+            ) as mock_send_matrix_reaction,
             patch("mmrelay.meshtastic_utils._submit_coro") as mock_submit_coro,
             patch("mmrelay.meshtastic_utils.logger"),
         ):
@@ -561,8 +560,10 @@ class TestMeshtasticUtils(unittest.TestCase):
             on_meshtastic_message(reaction_packet, mock_interface)
 
             mock_submit_coro.assert_called_once()
-            # Ensure we scheduled the matrix relay coroutine
-            self.assertTrue(mock_matrix_relay.called)
+            self.assertTrue(mock_send_matrix_reaction.called)
+            mock_send_matrix_reaction.assert_called_once_with(
+                "!room1:matrix.org", "evt1", ":)"
+            )
 
     def test_on_meshtastic_message_reply_relay(self):
         """
