@@ -60,7 +60,56 @@ def _is_channel_relay_room(room: Any) -> bool:
     return portal_type in (None, "", "channel")
 
 
-def _packet_link_details(packet: dict[str, Any]) -> str:
+def _node_num_from_info(key: Any, info: Any) -> Any:
+    if isinstance(info, dict):
+        for candidate in (
+            info.get("num"),
+            info.get("numHex"),
+            (
+                info.get("user", {}).get("id")
+                if isinstance(info.get("user"), dict)
+                else None
+            ),
+        ):
+            if candidate is not None:
+                return candidate
+    return key
+
+
+def _same_node_id(left: Any, right: Any) -> bool:
+    return str(left).lower().lstrip("!") == str(right).lower().lstrip("!")
+
+
+def _iter_interface_node_entries(interface: Any) -> list[tuple[Any, Any]]:
+    entries: list[tuple[Any, Any]] = []
+    for attr in ("nodesByNum", "nodes"):
+        nodes = getattr(interface, attr, None)
+        if isinstance(nodes, dict):
+            entries.extend(nodes.items())
+    return entries
+
+
+def _relay_node_label(interface: Any, relay_node: Any) -> str:
+    relay_text = str(relay_node)
+    entries = _iter_interface_node_entries(interface)
+    if not entries:
+        return f"#{relay_text}"
+
+    for key, info in entries:
+        if not _same_node_id(_node_num_from_info(key, info), relay_text):
+            continue
+
+        user = info.get("user") if isinstance(info, dict) else None
+        if isinstance(user, dict):
+            name = user.get("shortName") or user.get("longName")
+            if name:
+                return f"{name} #{relay_text}"
+        break
+
+    return f"#{relay_text}"
+
+
+def _packet_link_details(packet: dict[str, Any], interface: Any | None = None) -> str:
     parts: list[str] = []
     via_mqtt = packet.get("viaMqtt") or packet.get("via_mqtt")
     if via_mqtt:
@@ -94,7 +143,7 @@ def _packet_link_details(packet: dict[str, Any]) -> str:
 
     relay_node = packet.get("relayNode")
     if relay_node not in (None, 0, "0"):
-        parts.append(f"relay #{relay_node}")
+        parts.append(f"relay {_relay_node_label(interface, relay_node)}")
     return ", ".join(parts)
 
 
@@ -103,10 +152,11 @@ def _format_portal_channel_message(
     shortname: str,
     longname: str,
     packet: dict[str, Any],
+    interface: Any | None = None,
 ) -> str:
     name = shortname or longname
     body = f"{name}: {text}" if name else text
-    details = _packet_link_details(packet)
+    details = _packet_link_details(packet, interface)
     return f"{body}\n\nlink: {details}" if details else body
 
 
@@ -933,7 +983,9 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
                 facade.config, longname, shortname, meshtastic_meshnet or meshnet_name
             )
             formatted_message = (
-                _format_portal_channel_message(text, shortname, longname, packet)
+                _format_portal_channel_message(
+                    text, shortname, longname, packet, interface
+                )
                 if _portals_enabled()
                 else f"{prefix}{text}"
             )
@@ -1083,7 +1135,7 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
         prefix = get_matrix_prefix(facade.config, longname, shortname, meshnet_name)
         formatted_message = f"{prefix}{text}"
         channel_message = (
-            _format_portal_channel_message(text, shortname, longname, packet)
+            _format_portal_channel_message(text, shortname, longname, packet, interface)
             if _portals_enabled()
             else formatted_message
         )

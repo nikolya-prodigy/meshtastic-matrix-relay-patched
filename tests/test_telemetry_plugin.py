@@ -63,7 +63,7 @@ class TestTelemetryPlugin(unittest.TestCase):
         Test that the plugin's commands method returns the expected list of telemetry commands.
         """
         commands = self.plugin.commands()
-        expected = ["batteryLevel", "voltage", "airUtilTx"]
+        expected = ["battery", "voltage", "air"]
         self.assertEqual(commands, expected)
 
     def test_description(self):
@@ -80,7 +80,7 @@ class TestTelemetryPlugin(unittest.TestCase):
         Test that the plugin's get_matrix_commands method returns the expected list of Matrix commands.
         """
         commands = self.plugin.get_matrix_commands()
-        expected = ["batteryLevel", "voltage", "airUtilTx"]
+        expected = ["battery", "voltage", "air"]
         self.assertEqual(commands, expected)
 
     def test_get_mesh_commands(self):
@@ -439,7 +439,7 @@ class TestTelemetryPlugin(unittest.TestCase):
         Verifies that a valid leading telemetry command matches.
         """
         event = MagicMock()
-        event.body = "!batteryLevel"
+        event.body = "!battery"
         event.source = {"content": {"formatted_body": ""}}
         result = self.plugin.matches(event)
 
@@ -549,7 +549,7 @@ class TestTelemetryPlugin(unittest.TestCase):
             room = MagicMock()
             room.room_id = "!test:matrix.org"
             event = MagicMock()
-            full_message = "!batteryLevel"
+            full_message = "!battery"
             event.body = full_message
             event.source = {"content": {"formatted_body": ""}}
 
@@ -557,7 +557,7 @@ class TestTelemetryPlugin(unittest.TestCase):
                 """
                 Run the async test that verifies handle_room_message processes a room message to produce and send a plot image.
 
-                Verifies the handler returns a truthy result, creates a plot with expected labels ("Hour" x-axis, "batteryLevel" y-axis), and calls image upload and send operations.
+                Verifies the handler returns a truthy result, creates a plot with expected labels ("Hour" x-axis, "battery" y-axis), and calls image upload and send operations.
                 """
                 result = await self.plugin.handle_room_message(
                     room, event, full_message
@@ -570,7 +570,7 @@ class TestTelemetryPlugin(unittest.TestCase):
                 mock_ax.plot.assert_called_once()
                 mock_ax.set_title.assert_called_once()
                 mock_ax.set_xlabel.assert_called_once_with("Hour")
-                mock_ax.set_ylabel.assert_called_once_with("batteryLevel")
+                mock_ax.set_ylabel.assert_called_once_with("battery")
 
                 # Should send success reaction
                 self.plugin.send_matrix_reaction.assert_called_once_with(
@@ -663,7 +663,7 @@ class TestTelemetryPlugin(unittest.TestCase):
     def test_handle_room_message_matrix_unavailable(self):
         self.plugin.matches = MagicMock(return_value=True)
         self.plugin.get_matching_matrix_command_with_args = MagicMock(
-            return_value=("batteryLevel", "")
+            return_value=("battery", "")
         )
 
         with (
@@ -676,10 +676,10 @@ class TestTelemetryPlugin(unittest.TestCase):
                 room = MagicMock()
                 room.room_id = "!r"
                 event = MagicMock()
-                event.body = "!batteryLevel"
+                event.body = "!battery"
                 event.source = {"content": {"formatted_body": ""}}
                 result = await self.plugin.handle_room_message(
-                    room, event, "!batteryLevel"
+                    room, event, "!battery"
                 )
                 self.assertTrue(result)
                 self.plugin.send_matrix_reaction.assert_not_called()
@@ -691,7 +691,7 @@ class TestTelemetryPlugin(unittest.TestCase):
     def test_handle_room_message_node_no_data(self, _mock_send, mock_connect):
         self.plugin.matches = MagicMock(return_value=True)
         self.plugin.get_matching_matrix_command_with_args = MagicMock(
-            return_value=("batteryLevel", "NodeX")
+            return_value=("battery", "NodeX")
         )
         self.plugin.get_node_data.return_value = None
         self.plugin.send_matrix_message = AsyncMock()
@@ -708,10 +708,10 @@ class TestTelemetryPlugin(unittest.TestCase):
                 room = MagicMock()
                 room.room_id = "!r"
                 event = MagicMock()
-                event.body = "!batteryLevel NodeX"
+                event.body = "!battery NodeX"
                 event.source = {"content": {"formatted_body": ""}}
                 result = await self.plugin.handle_room_message(
-                    room, event, "!batteryLevel NodeX"
+                    room, event, "!battery NodeX"
                 )
                 self.assertTrue(result)
                 self.plugin.send_matrix_message.assert_awaited_once()
@@ -732,7 +732,7 @@ class TestTelemetryPlugin(unittest.TestCase):
 
         self.plugin.matches = MagicMock(return_value=True)
         self.plugin.get_matching_matrix_command_with_args = MagicMock(
-            return_value=("batteryLevel", "")
+            return_value=("battery", "")
         )
         now_ts = datetime.now(timezone.utc).timestamp()
         self.plugin.get_data.return_value = [
@@ -763,10 +763,10 @@ class TestTelemetryPlugin(unittest.TestCase):
                 room = MagicMock()
                 room.room_id = "!r"
                 event = MagicMock()
-                event.body = "!batteryLevel"
+                event.body = "!battery"
                 event.source = {"content": {"formatted_body": ""}}
                 result = await self.plugin.handle_room_message(
-                    room, event, "!batteryLevel"
+                    room, event, "!battery"
                 )
                 self.assertTrue(result)
                 self.plugin.send_matrix_reaction.assert_called_once_with(
@@ -782,7 +782,7 @@ class TestTelemetryPlugin(unittest.TestCase):
 
         self.plugin.matches = MagicMock(return_value=True)
         self.plugin.get_matching_matrix_command_with_args = MagicMock(
-            return_value=("batteryLevel", "")
+            return_value=("battery", "")
         )
         self.plugin.get_data.return_value = []
 
@@ -812,10 +812,10 @@ class TestTelemetryPlugin(unittest.TestCase):
                 room = MagicMock()
                 room.room_id = "!r"
                 event = MagicMock()
-                event.body = "!batteryLevel"
+                event.body = "!battery"
                 event.source = {"content": {"formatted_body": ""}}
                 result = await self.plugin.handle_room_message(
-                    room, event, "!batteryLevel"
+                    room, event, "!battery"
                 )
                 self.assertTrue(result)
                 self.assertGreaterEqual(mock_matrix_client.room_send.await_count, 1)
@@ -837,7 +837,7 @@ class TestTelemetryPlugin(unittest.TestCase):
 
         self.plugin.matches = MagicMock(return_value=True)
         self.plugin.get_matching_matrix_command_with_args = MagicMock(
-            return_value=("batteryLevel", "")
+            return_value=("battery", "")
         )
 
         now_ts = datetime.now(timezone.utc).timestamp()
@@ -869,10 +869,10 @@ class TestTelemetryPlugin(unittest.TestCase):
                 room = MagicMock()
                 room.room_id = "!r"
                 event = MagicMock()
-                event.body = "!batteryLevel"
+                event.body = "!battery"
                 event.source = {"content": {"formatted_body": ""}}
                 result = await self.plugin.handle_room_message(
-                    room, event, "!batteryLevel"
+                    room, event, "!battery"
                 )
                 self.assertTrue(result)
                 mock_ax.plot.assert_called_once()
@@ -891,7 +891,7 @@ class TestTelemetryPlugin(unittest.TestCase):
 
         self.plugin.matches = MagicMock(return_value=True)
         self.plugin.get_matching_matrix_command_with_args = MagicMock(
-            return_value=("batteryLevel", "")
+            return_value=("battery", "")
         )
 
         self.plugin.get_data.return_value = [
@@ -930,10 +930,10 @@ class TestTelemetryPlugin(unittest.TestCase):
                 room = MagicMock()
                 room.room_id = "!r"
                 event = MagicMock()
-                event.body = "!batteryLevel"
+                event.body = "!battery"
                 event.source = {"content": {"formatted_body": ""}}
                 result = await self.plugin.handle_room_message(
-                    room, event, "!batteryLevel"
+                    room, event, "!battery"
                 )
                 self.assertTrue(result)
                 mock_ax.plot.assert_called_once()
@@ -945,7 +945,7 @@ class TestTelemetryPlugin(unittest.TestCase):
     def test_handle_room_message_generic_exception(self, _mock_send, mock_connect):
         self.plugin.matches = MagicMock(return_value=True)
         self.plugin.get_matching_matrix_command_with_args = MagicMock(
-            return_value=("batteryLevel", "")
+            return_value=("battery", "")
         )
         self.plugin.get_data.side_effect = RuntimeError("unexpected error")
 
@@ -961,10 +961,10 @@ class TestTelemetryPlugin(unittest.TestCase):
                 room = MagicMock()
                 room.room_id = "!r"
                 event = MagicMock()
-                event.body = "!batteryLevel"
+                event.body = "!battery"
                 event.source = {"content": {"formatted_body": ""}}
                 result = await self.plugin.handle_room_message(
-                    room, event, "!batteryLevel"
+                    room, event, "!battery"
                 )
                 self.assertTrue(result)
                 self.plugin.send_matrix_reaction.assert_called_once_with(

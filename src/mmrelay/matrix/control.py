@@ -36,9 +36,9 @@ map - Render a map of nodes with positions
 weather - Current weather for the mesh area
 hourly - Hourly weather forecast
 daily - Daily weather forecast
-batteryLevel - Telemetry battery graph
+battery - Telemetry battery graph
 voltage - Telemetry voltage graph
-airUtilTx - Telemetry air utilization graph
+air - Telemetry air utilization graph
 
 Channel rooms are for Meshtastic traffic. Use this chat for bot commands.
 """.strip()

@@ -1725,9 +1725,9 @@ class TestBasePlugin(unittest.TestCase):
         """parse_mesh_bang_command should return canonical command spelling."""
         plugin = MockPlugin()
         result = plugin.parse_mesh_bang_command(
-            "!BATTERYLEVEL node123", ("batteryLevel", "voltage")
+            "!BATTERY node123", ("battery", "voltage")
         )
-        self.assertEqual(result, ("batteryLevel", "node123"))
+        self.assertEqual(result, ("battery", "node123"))
 
     def test_parse_mesh_bang_command_no_match(self):
         """parse_mesh_bang_command should return None when no command matches."""

@@ -34,15 +34,20 @@ class Plugin(BasePlugin):
     plugin_name = "telemetry"
     is_core_plugin = True
     max_data_rows_per_node = TELEMETRY_MAX_DATA_ROWS
+    command_metric_map = {
+        "battery": "batteryLevel",
+        "voltage": "voltage",
+        "air": "airUtilTx",
+    }
 
     def commands(self) -> list[str]:
         """
         List supported telemetry metric command names.
 
         Returns:
-            list[str]: Supported telemetry command names: "batteryLevel", "voltage", and "airUtilTx".
+            list[str]: Supported telemetry command names: "battery", "voltage", and "air".
         """
-        return ["batteryLevel", "voltage", "airUtilTx"]
+        return list(self.command_metric_map.keys())
 
     @property
     def description(self) -> str:
@@ -147,7 +152,7 @@ class Plugin(BasePlugin):
         Telemetry command names supported for Matrix messages.
 
         Returns:
-            list[str]: Supported telemetry command names: ["batteryLevel", "voltage", "airUtilTx"].
+            list[str]: Supported telemetry command names: ["battery", "voltage", "air"].
         """
         return self.commands()
 
@@ -171,7 +176,7 @@ class Plugin(BasePlugin):
 
         Matching is determined by ``matches(event)``, and command parsing comes from
         ``get_matching_matrix_command_with_args(event)``. The parsed tuple provides
-        ``parsed_command`` (one of ``batteryLevel``, ``voltage``, ``airUtilTx``) and
+        ``parsed_command`` (one of ``battery``, ``voltage``, ``air``) and
         optional args (node identifier). The handler then computes hourly averages,
         renders a graph, and uploads it or sends an error notice.
 
@@ -192,7 +197,8 @@ class Plugin(BasePlugin):
             return False
 
         parsed_command, args = parsed
-        telemetry_option = parsed_command
+        telemetry_label = parsed_command
+        telemetry_option = self.command_metric_map[parsed_command]
         node = args or None
 
         hourly_intervals = self._generate_timeperiods()
@@ -275,12 +281,12 @@ class Plugin(BasePlugin):
             ax.plot(hourly_strings, average_values)
 
             if node:
-                title = f"{node} Hourly {telemetry_option} Averages"
+                title = f"{node} Hourly {telemetry_label} Averages"
             else:
-                title = f"Network Hourly {telemetry_option} Averages"
+                title = f"Network Hourly {telemetry_label} Averages"
             ax.set_title(title)
             ax.set_xlabel("Hour")
-            ax.set_ylabel(f"{telemetry_option}")
+            ax.set_ylabel(telemetry_label)
 
             plt.xticks(rotation=GRAPH_XLABEL_ROTATION_DEGREES)
 

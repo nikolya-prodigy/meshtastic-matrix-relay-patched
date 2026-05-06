@@ -349,13 +349,14 @@ def test_on_meshtastic_message_portals_mode_formats_mqtt_and_relay_node():
         }
     )
 
+    nodes = {12: {"user": {"shortName": "RLY", "longName": "Relay Node"}}}
     with _patch_message_deps(patch_logger=False) as (_mock_logger, mock_relay):
-        on_meshtastic_message(packet, _make_interface())
+        on_meshtastic_message(packet, _make_interface(nodes=nodes))
 
     assert mock_relay is not None
     mock_relay.assert_awaited_once()
     assert mock_relay.await_args.args[1] == (
-        "Short: Hello\n\nlink: MQTT, 2 hops, SNR -16.5 dB, RSSI -87 dBm, relay #12"
+        "Short: Hello\n\nlink: MQTT, 2 hops, SNR -16.5 dB, RSSI -87 dBm, relay RLY #12"
     )
 
 
