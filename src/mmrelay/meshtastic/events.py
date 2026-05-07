@@ -76,8 +76,40 @@ def _node_num_from_info(key: Any, info: Any) -> Any:
     return key
 
 
-def _same_node_id(left: Any, right: Any) -> bool:
-    return str(left).lower().lstrip("!") == str(right).lower().lstrip("!")
+def _parse_node_number(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.startswith("!"):
+        text = text[1:]
+    try:
+        return int(text, 16) if any(c in "abcdefABCDEF" for c in text) else int(text)
+    except ValueError:
+        return None
+
+
+def _node_relay_tokens(key: Any, info: Any) -> set[str]:
+    tokens: set[str] = set()
+    candidates = [key, _node_num_from_info(key, info)]
+    if isinstance(info, dict):
+        user = info.get("user")
+        if isinstance(user, dict):
+            candidates.extend((user.get("id"), user.get("num"), user.get("numHex")))
+
+    for candidate in candidates:
+        if candidate in (None, ""):
+            continue
+        text = str(candidate).lower().lstrip("!")
+        tokens.add(text)
+        number = _parse_node_number(candidate)
+        if number is not None:
+            tokens.add(str(number))
+            tokens.add(str(number & 0xFF))
+    return tokens
 
 
 def _iter_interface_node_entries(interface: Any) -> list[tuple[Any, Any]]:
@@ -95,8 +127,9 @@ def _relay_node_label(interface: Any, relay_node: Any) -> str:
     if not entries:
         return f"#{relay_text}"
 
+    relay_token = relay_text.lower().lstrip("!")
     for key, info in entries:
-        if not _same_node_id(_node_num_from_info(key, info), relay_text):
+        if relay_token not in _node_relay_tokens(key, info):
             continue
 
         user = info.get("user") if isinstance(info, dict) else None

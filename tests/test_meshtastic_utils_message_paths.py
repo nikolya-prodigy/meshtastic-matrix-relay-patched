@@ -360,6 +360,24 @@ def test_on_meshtastic_message_portals_mode_formats_mqtt_and_relay_node():
 
 
 @pytest.mark.usefixtures("reset_meshtastic_globals")
+def test_on_meshtastic_message_portals_mode_formats_relay_node_low_byte():
+    config = _base_config()
+    config["meshtastic_portals"] = {"enabled": True}
+    config["matrix_rooms"][0]["meshtastic_portal_type"] = "channel"
+    _set_globals(config)
+    packet = _base_packet()
+    packet.update({"relayNode": 90})
+
+    nodes = {"!1122335a": {"user": {"id": "!1122335a", "shortName": "RLY"}}}
+    with _patch_message_deps(patch_logger=False) as (_mock_logger, mock_relay):
+        on_meshtastic_message(packet, _make_interface(nodes=nodes))
+
+    assert mock_relay is not None
+    mock_relay.assert_awaited_once()
+    assert mock_relay.await_args.args[1] == "Short: Hello\n\nlink: LoRa, relay RLY #90"
+
+
+@pytest.mark.usefixtures("reset_meshtastic_globals")
 def test_on_meshtastic_message_portals_reply_keeps_matrix_reply_and_link_details():
     config = _base_config()
     config["meshtastic_portals"] = {"enabled": True}

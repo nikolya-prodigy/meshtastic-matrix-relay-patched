@@ -15,6 +15,7 @@ def _room() -> SimpleNamespace:
 def _event(body: str) -> SimpleNamespace:
     return SimpleNamespace(
         sender="@nikolya:example.org",
+        event_id="$event",
         body=body,
         source={"content": {"body": body}},
     )
@@ -60,6 +61,11 @@ def _interface() -> SimpleNamespace:
                 "hopsAway": 1,
                 "snr": -7.5,
                 "deviceMetrics": {"batteryLevel": 95, "voltage": 4.1},
+                "environmentMetrics": {
+                    "temperature": 23.4,
+                    "relativeHumidity": 55.2,
+                    "barometricPressure": 1012.8,
+                },
             },
         }
     )
@@ -85,6 +91,12 @@ def _capture_messages(monkeypatch) -> list[str]:
     return sent
 
 
+def _capture_reactions(monkeypatch) -> AsyncMock:
+    reaction = AsyncMock()
+    monkeypatch.setattr(facade, "send_matrix_reaction", reaction)
+    return reaction
+
+
 @pytest.fixture(autouse=True)
 def reset_control_state(monkeypatch):
     monkeypatch.setattr(
@@ -98,6 +110,7 @@ def reset_control_state(monkeypatch):
         },
     )
     monkeypatch.setattr(control, "_NODE_INDEX_CACHE", {})
+    monkeypatch.setattr(facade, "send_matrix_reaction", AsyncMock())
     monkeypatch.setattr(meshtastic_utils, "meshtastic_client", _interface())
     yield
 
@@ -105,10 +118,12 @@ def reset_control_state(monkeypatch):
 @pytest.mark.asyncio
 async def test_nodes_command_builds_stable_numbered_cache(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
+    reaction = _capture_reactions(monkeypatch)
 
     handled = await control.handle_control_room_message(_room(), _event("nodes 1"))
 
     assert handled is True
+    reaction.assert_awaited_once_with("!control:example.org", "$event", "✅")
     assert "Nodes: 2 / Online 1, showing 1 of 2" in sent[0]
     assert "1. NEW New Node" in sent[0]
     assert "OLD Old Node" not in sent[0]
@@ -298,6 +313,20 @@ async def test_channels_command_lists_discovered_channels(monkeypatch) -> None:
     assert "psk: configured" in sent[-1]
     assert "room: !channel0:example.org" in sent[-1]
     assert "#1 Anapa" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_weather_nodes_command_lists_environment_sensors(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+
+    handled = await control.handle_control_room_message(_room(), _event("weather nodes"))
+
+    assert handled is True
+    assert "Weather sensor nodes: 1" in sent[-1]
+    assert "NEW New Node" in sent[-1]
+    assert "temp: 23.4C" in sent[-1]
+    assert "humidity: 55%" in sent[-1]
+    assert "pressure: 1012.8 hPa" in sent[-1]
 
 
 @pytest.mark.asyncio

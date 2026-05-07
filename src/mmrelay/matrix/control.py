@@ -34,6 +34,7 @@ status - Show bridge, node, room and queue status
 refresh - Refresh managed rooms, profiles and bot avatar
 map - Render a map of nodes with positions
 weather - Current weather for the mesh area
+weather nodes - List nodes with environment sensor readings
 hourly - Hourly weather forecast
 daily - Daily weather forecast
 battery - Telemetry battery graph
@@ -139,6 +140,16 @@ async def send_control_message(room_id: str, message: str) -> None:
         facade.logger.exception("Failed to send control message to %s", room_id)
 
 
+async def _send_control_reaction(room: Any, event: Any, emoji: str) -> None:
+    event_id = getattr(event, "event_id", None)
+    if not isinstance(event_id, str) or not event_id:
+        return
+    try:
+        await facade.send_matrix_reaction(room.room_id, event_id, emoji)
+    except Exception:  # noqa: BLE001 - reactions are nice-to-have for commands
+        facade.logger.debug("Failed to send control command reaction", exc_info=True)
+
+
 def _plain_text_to_html(message: str) -> str:
     return html.escape(message).replace("\n", "<br>")
 
@@ -218,6 +229,43 @@ def _format_battery(info: dict[str, Any]) -> tuple[str, str]:
         if metrics.get("voltage") is not None:
             voltage = f"{metrics['voltage']}V"
     return battery, voltage
+
+
+def _environment_metrics(info: dict[str, Any]) -> dict[str, Any]:
+    metrics = info.get("environmentMetrics")
+    if isinstance(metrics, dict):
+        return metrics
+    telemetry = info.get("telemetry")
+    if isinstance(telemetry, dict):
+        metrics = telemetry.get("environmentMetrics")
+        if isinstance(metrics, dict):
+            return metrics
+    return {}
+
+
+def _format_environment_metrics(metrics: dict[str, Any]) -> str:
+    def rounded(value: Any, digits: int = 1) -> str | None:
+        try:
+            return str(round(float(value), digits))
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    parts: list[str] = []
+    if (value := rounded(metrics.get("temperature"))) is not None:
+        parts.append(f"temp: {value}C")
+    try:
+        humidity = metrics.get("relativeHumidity")
+        if humidity is not None:
+            parts.append(f"humidity: {round(float(humidity))}%")
+    except (TypeError, ValueError, OverflowError):
+        pass
+    if (value := rounded(metrics.get("barometricPressure"))) is not None:
+        parts.append(f"pressure: {value} hPa")
+    if (value := rounded(metrics.get("gasResistance"))) is not None:
+        parts.append(f"gas: {value}")
+    if metrics.get("iaq") is not None:
+        parts.append(f"iaq: {metrics['iaq']}")
+    return ", ".join(parts)
 
 
 def _build_node_index(interface: Any) -> list[NodeEntry]:
@@ -509,6 +557,49 @@ async def _handle_channels_command(room: Any) -> bool:
     lines = [f"Meshtastic channels: {len(channels)}"]
     lines.extend(_channel_brief(channel) for channel in channels)
     await send_control_message(room.room_id, "\n\n".join(lines))
+    return True
+
+
+async def _handle_weather_nodes_command(room: Any) -> bool:
+    interface = _get_interface()
+    if interface is None:
+        await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
+        return True
+
+    nodes = getattr(interface, "nodes", None)
+    if not isinstance(nodes, dict):
+        await send_control_message(room.room_id, "No Meshtastic nodes found.")
+        return True
+
+    entries = _build_node_index(interface)
+    entry_by_id = {entry.node_id: entry for entry in entries}
+    lines: list[str] = []
+    for node_id, info in nodes.items():
+        if not isinstance(info, dict):
+            continue
+        formatted = _format_environment_metrics(_environment_metrics(info))
+        if not formatted:
+            continue
+        user = info.get("user") if isinstance(info.get("user"), dict) else {}
+        stable_node_id = str(user.get("id") or node_id)
+        entry = entry_by_id.get(stable_node_id)
+        title = entry.title if entry else stable_node_id
+        last = entry.last_heard if entry else "?"
+        lines.append(
+            f"{len(lines) + 1}. {title}\n"
+            f"   id: {stable_node_id}\n"
+            f"   {formatted}\n"
+            f"   last: {last}"
+        )
+
+    if not lines:
+        await send_control_message(room.room_id, "No nodes with environment sensor readings found.")
+        return True
+
+    await send_control_message(
+        room.room_id,
+        f"Weather sensor nodes: {len(lines)}\n\n" + "\n\n".join(lines),
+    )
     return True
 
 
@@ -808,6 +899,7 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
     if not is_authorized_control_user(event.sender):
         facade.logger.info("Ignoring unauthorized control command from %s", event.sender)
         await send_control_message(room.room_id, "Not authorized.")
+        await _send_control_reaction(room, event, "❌")
         return True
 
     text = _message_body(event)
@@ -817,23 +909,44 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
 
     if command.casefold() == "help":
         await send_control_message(room.room_id, CONTROL_HELP)
+        await _send_control_reaction(room, event, "✅")
         return True
     if command.casefold() == "nodes":
-        return await _handle_nodes_command(room, event, args)
+        handled = await _handle_nodes_command(room, event, args)
+        await _send_control_reaction(room, event, "✅")
+        return handled
     if command.casefold() == "find":
-        return await _handle_find_command(room, event, args)
+        handled = await _handle_find_command(room, event, args)
+        await _send_control_reaction(room, event, "✅")
+        return handled
     if command.casefold() == "node":
-        return await _handle_node_command(room, event, args)
+        handled = await _handle_node_command(room, event, args)
+        await _send_control_reaction(room, event, "✅")
+        return handled
     if command.casefold() == "dm":
-        return await _handle_dm_command(room, event, args)
+        handled = await _handle_dm_command(room, event, args)
+        await _send_control_reaction(room, event, "✅")
+        return handled
     if command.casefold() == "channels":
-        return await _handle_channels_command(room)
+        handled = await _handle_channels_command(room)
+        await _send_control_reaction(room, event, "✅")
+        return handled
     if command.casefold() == "rooms":
-        return await _handle_rooms_command(room)
+        handled = await _handle_rooms_command(room)
+        await _send_control_reaction(room, event, "✅")
+        return handled
     if command.casefold() == "status":
-        return await _handle_status_command(room)
+        handled = await _handle_status_command(room)
+        await _send_control_reaction(room, event, "✅")
+        return handled
     if command.casefold() == "refresh":
-        return await _handle_refresh_command(room)
+        handled = await _handle_refresh_command(room)
+        await _send_control_reaction(room, event, "✅")
+        return handled
+    if command.casefold() == "weather" and args.casefold().strip() == "nodes":
+        handled = await _handle_weather_nodes_command(room)
+        await _send_control_reaction(room, event, "✅")
+        return handled
 
     from mmrelay.plugin_loader import load_plugins
 
@@ -845,6 +958,7 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
             room.room_id,
             f"Unknown command: {command}\n\nType help to see available commands.",
         )
+        await _send_control_reaction(room, event, "❌")
         return True
 
     canonical_command, plugin = match
@@ -864,9 +978,11 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
                 room.room_id,
                 f"Command did not produce a response: {command}",
             )
+            await _send_control_reaction(room, event, "❌")
     except Exception:  # noqa: BLE001 - plugin isolation
         facade.logger.exception("Error handling control command %s", command)
         await send_control_message(room.room_id, f"Command failed: {command}")
+        await _send_control_reaction(room, event, "❌")
     finally:
         plugin.config = old_config
         plugin._global_require_bot_mention = old_global_require
