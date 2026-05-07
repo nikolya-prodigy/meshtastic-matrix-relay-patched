@@ -89,14 +89,16 @@ class Plugin(BasePlugin):
         longname: str,
         meshnet_name: str,
     ) -> bool:
-        # Support deviceMetrics only for now
         """
-        Record device telemetry from an incoming Meshtastic telemetry packet for the sending node.
+        Record telemetry from an incoming Meshtastic telemetry packet for the sending node.
 
-        When `packet` contains a normalized `decoded.portnum` matching `TELEMETRY_APP_PORTNUM` (numeric values and enum-name strings are both accepted), `decoded.telemetry.deviceMetrics`, and a `fromId`, extracts the telemetry timestamp and the `batteryLevel`, `voltage`, and `airUtilTx` fields (each `None` if missing) and appends a telemetry record for that sender. Other packet contents are not modified.
+        When `packet` contains a normalized `decoded.portnum` matching `TELEMETRY_APP_PORTNUM`
+        (numeric values and enum-name strings are both accepted), telemetry metrics, and a `fromId`,
+        extracts the telemetry timestamp and appends a telemetry record for that sender.
+        Other packet contents are not modified.
 
         Parameters:
-            packet (dict): Meshtastic packet expected to include `decoded` with `portnum` and `telemetry.deviceMetrics`.
+            packet (dict): Meshtastic packet expected to include `decoded` with `portnum` and telemetry metrics.
             formatted_message (str): Unused.
             longname (str): Unused.
             meshnet_name (str): Unused.
@@ -112,10 +114,16 @@ class Plugin(BasePlugin):
         device_metrics = (
             telemetry.get("deviceMetrics") if isinstance(telemetry, dict) else None
         )
+        environment_metrics = (
+            telemetry.get("environmentMetrics") if isinstance(telemetry, dict) else None
+        )
         if (
             _get_portnum_name(decoded.get("portnum")) == TELEMETRY_APP_PORTNUM
             and isinstance(telemetry, dict)
-            and isinstance(device_metrics, dict)
+            and (
+                isinstance(device_metrics, dict)
+                or isinstance(environment_metrics, dict)
+            )
         ):
             from_id = packet.get("fromId")
             if from_id is None:
@@ -130,18 +138,43 @@ class Plugin(BasePlugin):
                 telemetry_time
             ):
                 telemetry_time = None
-            telemetry_data.append(
-                {
-                    "time": (
-                        telemetry_time
-                        if telemetry_time is not None
-                        else packet.get("rxTime")
-                    ),
-                    "batteryLevel": device_metrics.get("batteryLevel"),
-                    "voltage": device_metrics.get("voltage"),
-                    "airUtilTx": device_metrics.get("airUtilTx"),
-                }
-            )
+            record = {
+                "time": (
+                    telemetry_time
+                    if telemetry_time is not None
+                    else packet.get("rxTime")
+                ),
+                "batteryLevel": (
+                    device_metrics.get("batteryLevel")
+                    if isinstance(device_metrics, dict)
+                    else None
+                ),
+                "voltage": (
+                    device_metrics.get("voltage")
+                    if isinstance(device_metrics, dict)
+                    else None
+                ),
+                "airUtilTx": (
+                    device_metrics.get("airUtilTx")
+                    if isinstance(device_metrics, dict)
+                    else None
+                ),
+            }
+            if isinstance(environment_metrics, dict):
+                record.update(
+                    {
+                        "temperature": environment_metrics.get("temperature"),
+                        "relativeHumidity": environment_metrics.get(
+                            "relativeHumidity"
+                        ),
+                        "barometricPressure": environment_metrics.get(
+                            "barometricPressure"
+                        ),
+                        "gasResistance": environment_metrics.get("gasResistance"),
+                        "iaq": environment_metrics.get("iaq"),
+                    }
+                )
+            telemetry_data.append(record)
             self.set_node_data(meshtastic_id=from_id, node_data=telemetry_data)
             return False
 

@@ -243,6 +243,22 @@ def _environment_metrics(info: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _environment_metrics_from_record(record: Any) -> dict[str, Any]:
+    if not isinstance(record, dict):
+        return {}
+    return {
+        key: record.get(key)
+        for key in (
+            "temperature",
+            "relativeHumidity",
+            "barometricPressure",
+            "gasResistance",
+            "iaq",
+        )
+        if record.get(key) is not None
+    }
+
+
 def _format_environment_metrics(metrics: dict[str, Any]) -> str:
     def rounded(value: Any, digits: int = 1) -> str | None:
         try:
@@ -266,6 +282,38 @@ def _format_environment_metrics(metrics: dict[str, Any]) -> str:
     if metrics.get("iaq") is not None:
         parts.append(f"iaq: {metrics['iaq']}")
     return ", ".join(parts)
+
+
+def _node_key_candidates(node_id: Any, info: dict[str, Any]) -> list[str]:
+    user = info.get("user") if isinstance(info.get("user"), dict) else {}
+    raw_candidates = [
+        node_id,
+        user.get("id"),
+        user.get("num"),
+        user.get("numHex"),
+    ]
+
+    candidates: list[str] = []
+    for value in raw_candidates:
+        if value in (None, ""):
+            continue
+        text = str(value)
+        for candidate in (text, text.lstrip("!")):
+            if candidate not in candidates:
+                candidates.append(candidate)
+        stripped = text.lstrip("!")
+        try:
+            number = (
+                int(stripped, 16)
+                if any(c in "abcdefABCDEF" for c in stripped)
+                else int(stripped)
+            )
+        except ValueError:
+            continue
+        decimal = str(number)
+        if decimal not in candidates:
+            candidates.append(decimal)
+    return candidates
 
 
 def _build_node_index(interface: Any) -> list[NodeEntry]:
@@ -560,6 +608,34 @@ async def _handle_channels_command(room: Any) -> bool:
     return True
 
 
+def _latest_environment_record_for_node(
+    node_id: Any, info: dict[str, Any]
+) -> dict[str, Any]:
+    from mmrelay.plugins.telemetry_plugin import Plugin as TelemetryPlugin
+
+    plugin = TelemetryPlugin()
+    latest: dict[str, Any] = {}
+    latest_time = -1.0
+    for candidate in _node_key_candidates(node_id, info):
+        rows = plugin.get_node_data(candidate)
+        if not isinstance(rows, list):
+            rows = [rows]
+        for row in rows:
+            metrics = _environment_metrics_from_record(row)
+            if not metrics:
+                continue
+            timestamp = row.get("time") if isinstance(row, dict) else None
+            try:
+                row_time = float(timestamp)
+            except (TypeError, ValueError, OverflowError):
+                row_time = 0.0
+            if row_time >= latest_time:
+                latest_time = row_time
+                latest = dict(metrics)
+                latest["time"] = timestamp
+    return latest
+
+
 async def _handle_weather_nodes_command(room: Any) -> bool:
     interface = _get_interface()
     if interface is None:
@@ -577,7 +653,10 @@ async def _handle_weather_nodes_command(room: Any) -> bool:
     for node_id, info in nodes.items():
         if not isinstance(info, dict):
             continue
-        formatted = _format_environment_metrics(_environment_metrics(info))
+        metrics = _environment_metrics(info)
+        if not metrics:
+            metrics = _latest_environment_record_for_node(node_id, info)
+        formatted = _format_environment_metrics(metrics)
         if not formatted:
             continue
         user = info.get("user") if isinstance(info.get("user"), dict) else {}
@@ -585,6 +664,11 @@ async def _handle_weather_nodes_command(room: Any) -> bool:
         entry = entry_by_id.get(stable_node_id)
         title = entry.title if entry else stable_node_id
         last = entry.last_heard if entry else "?"
+        if metrics.get("time") is not None:
+            try:
+                last = _relative_time(float(metrics["time"]))
+            except (TypeError, ValueError, OverflowError, OSError):
+                pass
         lines.append(
             f"{len(lines) + 1}. {title}\n"
             f"   id: {stable_node_id}\n"

@@ -262,9 +262,47 @@ class TestTelemetryPlugin(unittest.TestCase):
 
         asyncio.run(run_test())
 
+    def test_handle_meshtastic_message_environment_metrics(self):
+        """Environment telemetry packets should be stored for weather node listings."""
+        packet = {
+            "fromId": "!12345678",
+            "decoded": {
+                "portnum": "TELEMETRY_APP",
+                "telemetry": {
+                    "time": 1642248000,
+                    "environmentMetrics": {
+                        "temperature": 21.6,
+                        "relativeHumidity": 61.4,
+                        "barometricPressure": 1011.2,
+                        "gasResistance": 1582.0,
+                        "iaq": 176,
+                    },
+                },
+            },
+        }
+
+        async def run_test() -> None:
+            result = await self.plugin.handle_meshtastic_message(
+                packet, "formatted_message", "longname", "meshnet_name"
+            )
+
+            self.assertFalse(result)
+            self.plugin.set_node_data.assert_called_once()
+            stored_data = self.plugin.set_node_data.call_args.kwargs["node_data"]
+            self.assertEqual(stored_data[0]["time"], 1642248000)
+            self.assertEqual(stored_data[0]["temperature"], 21.6)
+            self.assertEqual(stored_data[0]["relativeHumidity"], 61.4)
+            self.assertEqual(stored_data[0]["barometricPressure"], 1011.2)
+            self.assertEqual(stored_data[0]["gasResistance"], 1582.0)
+            self.assertEqual(stored_data[0]["iaq"], 176)
+
+        import asyncio
+
+        asyncio.run(run_test())
+
     def test_handle_meshtastic_message_missing_device_metrics(self):
         """
-        Test that a telemetry message missing device metrics is ignored and no data is stored.
+        Test that a telemetry message missing all metric groups is ignored and no data is stored.
         """
         packet = {
             "fromId": "!12345678",

@@ -330,6 +330,39 @@ async def test_weather_nodes_command_lists_environment_sensors(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_weather_nodes_command_uses_stored_environment_telemetry(monkeypatch) -> None:
+    from mmrelay.plugins.telemetry_plugin import Plugin as TelemetryPlugin
+
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    del interface.nodes["new"]["environmentMetrics"]
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+
+    def get_node_data(_self, meshtastic_id):
+        if meshtastic_id in {"!new", "new"}:
+            return [
+                {
+                    "time": 1_700_000_000,
+                    "temperature": 18.9,
+                    "relativeHumidity": 72.1,
+                    "barometricPressure": 1008.4,
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(TelemetryPlugin, "get_node_data", get_node_data)
+
+    handled = await control.handle_control_room_message(_room(), _event("weather nodes"))
+
+    assert handled is True
+    assert "Weather sensor nodes: 1" in sent[-1]
+    assert "NEW New Node" in sent[-1]
+    assert "temp: 18.9C" in sent[-1]
+    assert "humidity: 72%" in sent[-1]
+    assert "pressure: 1008.4 hPa" in sent[-1]
+
+
+@pytest.mark.asyncio
 async def test_channel_send_command_is_not_available(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
     queue_message = MagicMock(return_value=True)
