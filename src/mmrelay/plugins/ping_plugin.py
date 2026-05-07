@@ -61,6 +61,7 @@ class Plugin(BasePlugin):
     plugin_name = "ping"
     is_core_plugin = True
     _invalid_mimic_mode_warned: bool = False
+    _invalid_auto_pong_warned: bool = False
 
     @property
     def description(self) -> str:
@@ -79,6 +80,37 @@ class Plugin(BasePlugin):
             )
             self._invalid_mimic_mode_warned = True
         return False
+
+    def get_auto_pong_response(self, message: str) -> str | None:
+        auto_pong = self.config.get("auto_pong", {})
+        if not isinstance(auto_pong, dict):
+            if not self._invalid_auto_pong_warned:
+                self.logger.warning(
+                    "Invalid ping.auto_pong value %r; expected mapping. Defaulting to disabled.",
+                    auto_pong,
+                )
+                self._invalid_auto_pong_warned = True
+            return None
+
+        if auto_pong.get("enabled") is not True:
+            return None
+
+        raw_triggers = auto_pong.get("triggers", ["ping", "пинг"])
+        if isinstance(raw_triggers, str):
+            triggers = [raw_triggers]
+        elif isinstance(raw_triggers, list):
+            triggers = [trigger for trigger in raw_triggers if isinstance(trigger, str)]
+        else:
+            triggers = []
+
+        normalized_message = message.strip().casefold()
+        normalized_triggers = {trigger.strip().casefold() for trigger in triggers}
+        normalized_triggers.discard("")
+        if normalized_message not in normalized_triggers:
+            return None
+
+        response = auto_pong.get("response", "pong")
+        return response if isinstance(response, str) and response else "pong"
 
     async def handle_meshtastic_message(
         self,
@@ -102,9 +134,10 @@ class Plugin(BasePlugin):
         raw_channel = packet.get("channel")
         channel = DEFAULT_CHANNEL if raw_channel is None else raw_channel
 
-        mimic_mode = self.get_mimic_mode()
-
-        if mimic_mode:
+        auto_pong_response = self.get_auto_pong_response(message)
+        if auto_pong_response is not None:
+            reply_message = auto_pong_response
+        elif self.get_mimic_mode():
             match = PING_COMMAND_REGEX.fullmatch(message)
             if not match:
                 return False

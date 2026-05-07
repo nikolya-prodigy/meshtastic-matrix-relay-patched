@@ -941,6 +941,104 @@ class TestPingPluginMimicMode(unittest.TestCase):
         asyncio.run(run_test())
 
 
+class TestPingPluginAutoPong(unittest.TestCase):
+    def setUp(self):
+        self.plugin = Plugin()
+        self.plugin.logger = MagicMock()
+        self.plugin.is_channel_enabled = MagicMock(return_value=True)
+        self.plugin.get_response_delay = MagicMock(return_value=1.0)
+        self.plugin.config = {
+            "auto_pong": {
+                "enabled": True,
+                "triggers": ["ping", "пинг"],
+                "response": "pong",
+            }
+        }
+        self.plugin.send_message = MagicMock()
+
+    @patch("mmrelay.meshtastic_utils.connect_meshtastic")
+    @patch("asyncio.sleep")
+    def test_auto_pong_replies_to_configured_words(self, mock_sleep, mock_connect):
+        mock_client = MagicMock()
+        mock_client.myInfo.my_node_num = 123456789
+        mock_connect.return_value = mock_client
+
+        async def run_test() -> None:
+            for message in ("ping", "PING", "пинг", "ПИНГ"):
+                with self.subTest(message=message):
+                    packet = {
+                        "decoded": {"text": message},
+                        "channel": 0,
+                        "fromId": "!12345678",
+                        "to": BROADCAST_NUM,
+                        "id": 42,
+                    }
+                    result = await self.plugin.handle_meshtastic_message(
+                        packet, "formatted_message", "TestNode", "TestMesh"
+                    )
+                    self.assertTrue(result)
+                    mock_sleep.assert_called_once_with(1.0)
+                    self.plugin.send_message.assert_called_once_with(
+                        text="pong", channel=0, reply_id=42
+                    )
+                    mock_sleep.reset_mock()
+                    self.plugin.send_message.reset_mock()
+
+        asyncio.run(run_test())
+
+    @patch("mmrelay.meshtastic_utils.connect_meshtastic")
+    def test_auto_pong_ignores_sentences(self, mock_connect):
+        mock_client = MagicMock()
+        mock_client.myInfo.my_node_num = 123456789
+        mock_connect.return_value = mock_client
+
+        packet = {
+            "decoded": {"text": "ping test"},
+            "channel": 0,
+            "fromId": "!12345678",
+            "to": BROADCAST_NUM,
+        }
+
+        async def run_test() -> None:
+            result = await self.plugin.handle_meshtastic_message(
+                packet, "formatted_message", "TestNode", "TestMesh"
+            )
+            self.assertFalse(result)
+            self.plugin.send_message.assert_not_called()
+
+        asyncio.run(run_test())
+
+    @patch("mmrelay.meshtastic_utils.connect_meshtastic")
+    @patch("asyncio.sleep")
+    def test_auto_pong_can_reply_to_direct_message(self, mock_sleep, mock_connect):
+        mock_client = MagicMock()
+        mock_client.myInfo.my_node_num = 123456789
+        mock_connect.return_value = mock_client
+
+        packet = {
+            "decoded": {"text": "пинг"},
+            "channel": 2,
+            "fromId": "!12345678",
+            "to": 123456789,
+            "id": 77,
+        }
+
+        async def run_test() -> None:
+            result = await self.plugin.handle_meshtastic_message(
+                packet, "formatted_message", "TestNode", "TestMesh"
+            )
+            self.assertTrue(result)
+            self.plugin.is_channel_enabled.assert_called_once_with(
+                2, is_direct_message=True
+            )
+            mock_sleep.assert_called_once_with(1.0)
+            self.plugin.send_message.assert_called_once_with(
+                text="pong", channel=2, destination_id="!12345678", reply_id=77
+            )
+
+        asyncio.run(run_test())
+
+
 class TestPingPluginMatrixHandling(unittest.TestCase):
     def setUp(self):
         self.plugin = Plugin()
