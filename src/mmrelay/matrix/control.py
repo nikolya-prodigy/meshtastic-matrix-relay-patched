@@ -50,7 +50,10 @@ Channel rooms are for Meshtastic traffic. Use this chat for bot commands.
 """.strip()
 
 DEFAULT_NODES_LIMIT = 30
+TRACE_ROUTE_BASE_TIMEOUT_SECONDS = 4.0
+TELEMETRY_TIMEOUT_SECONDS = 30.0
 _NODE_INDEX_CACHE: dict[tuple[str, str], list["NodeEntry"]] = {}
+_CONTROL_BACKGROUND_REQUESTS: set[tuple[str, ...]] = set()
 
 
 @dataclass(frozen=True)
@@ -553,6 +556,76 @@ def _capture_meshtastic_summary(action: Any) -> tuple[list[str], str | None]:
     return handler.lines, None
 
 
+def _run_with_meshtastic_timeout(
+    interface: Any,
+    timeout_seconds: float,
+    action: Any,
+) -> None:
+    timeout = getattr(interface, "_timeout", None)
+    if timeout is None or not hasattr(timeout, "expireTimeout"):
+        action()
+        return
+
+    old_timeout = timeout.expireTimeout
+    timeout.expireTimeout = timeout_seconds
+    try:
+        action()
+    finally:
+        timeout.expireTimeout = old_timeout
+
+
+async def _send_meshtastic_summary_result(
+    room_id: str,
+    title: str,
+    interface: Any,
+    timeout_seconds: float,
+    action: Any,
+) -> None:
+    def _action_with_timeout() -> None:
+        _run_with_meshtastic_timeout(interface, timeout_seconds, action)
+
+    lines, error = await asyncio.to_thread(
+        _capture_meshtastic_summary,
+        _action_with_timeout,
+    )
+    await send_control_message(room_id, _format_meshtastic_summary(title, lines, error))
+
+
+def _schedule_meshtastic_summary_result(
+    room_id: str,
+    title: str,
+    interface: Any,
+    timeout_seconds: float,
+    action: Any,
+    request_key: tuple[str, ...] | None = None,
+) -> bool:
+    if request_key is not None:
+        if request_key in _CONTROL_BACKGROUND_REQUESTS:
+            return False
+        _CONTROL_BACKGROUND_REQUESTS.add(request_key)
+
+    task = asyncio.create_task(
+        _send_meshtastic_summary_result(
+            room_id,
+            title,
+            interface,
+            timeout_seconds,
+            action,
+        )
+    )
+
+    def _log_background_error(done: asyncio.Task[None]) -> None:
+        if request_key is not None:
+            _CONTROL_BACKGROUND_REQUESTS.discard(request_key)
+        try:
+            done.result()
+        except Exception:  # noqa: BLE001 - keep Matrix sync loop alive
+            facade.logger.exception("Meshtastic control background request failed")
+
+    task.add_done_callback(_log_background_error)
+    return True
+
+
 def _format_meshtastic_summary(
     title: str,
     lines: list[str],
@@ -866,17 +939,25 @@ async def _handle_trace_command(room: Any, event: Any, args: str) -> bool:
         await send_control_message(room.room_id, "Traceroute is not supported by this Meshtastic API.")
         return True
 
-    await send_control_message(room.room_id, f"Tracing route to {entry.title}...")
+    await send_control_message(
+        room.room_id,
+        f"Tracing route to {entry.title}... I will post the result here.",
+    )
     hop_limit = _trace_hop_limit(interface)
 
     def _action() -> None:
         interface.sendTraceRoute(entry.node_id, hopLimit=hop_limit, channelIndex=0)
 
-    lines, error = await asyncio.to_thread(_capture_meshtastic_summary, _action)
-    await send_control_message(
+    scheduled = _schedule_meshtastic_summary_result(
         room.room_id,
-        _format_meshtastic_summary(f"Trace route for {entry.title}", lines, error),
+        f"Trace route for {entry.title}",
+        interface,
+        TRACE_ROUTE_BASE_TIMEOUT_SECONDS,
+        _action,
+        ("trace", room.room_id, entry.node_id),
     )
+    if not scheduled:
+        await send_control_message(room.room_id, f"Trace route for {entry.title} is already running.")
     return True
 
 
@@ -900,7 +981,10 @@ async def _handle_telemetry_command(room: Any, event: Any, args: str) -> bool:
         await send_control_message(room.room_id, "Telemetry requests are not supported by this Meshtastic API.")
         return True
 
-    await send_control_message(room.room_id, f"Requesting telemetry from {entry.title}...")
+    await send_control_message(
+        room.room_id,
+        f"Requesting telemetry from {entry.title}... I will post the result here.",
+    )
 
     def _action() -> None:
         interface.sendTelemetry(
@@ -910,11 +994,16 @@ async def _handle_telemetry_command(room: Any, event: Any, args: str) -> bool:
             telemetryType=telemetry_type,
         )
 
-    lines, error = await asyncio.to_thread(_capture_meshtastic_summary, _action)
-    await send_control_message(
+    scheduled = _schedule_meshtastic_summary_result(
         room.room_id,
-        _format_meshtastic_summary(f"Telemetry for {entry.title}", lines, error),
+        f"Telemetry for {entry.title}",
+        interface,
+        TELEMETRY_TIMEOUT_SECONDS,
+        _action,
+        ("telemetry", room.room_id, entry.node_id, telemetry_type),
     )
+    if not scheduled:
+        await send_control_message(room.room_id, f"Telemetry request for {entry.title} is already running.")
     return True
 
 
