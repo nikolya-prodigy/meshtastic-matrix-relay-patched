@@ -406,6 +406,11 @@ from mmrelay.matrix.relay import (
     matrix_relay,
     send_matrix_reaction,
 )
+from mmrelay.matrix.delivery import (
+    apply_delivery_ack_kwargs,
+    create_delivery_info,
+    get_delivery_receipts_config,
+)
 from mmrelay.matrix.replies import (
     format_reply_message,
     get_user_display_name,

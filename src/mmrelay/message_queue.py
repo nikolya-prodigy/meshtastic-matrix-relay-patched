@@ -48,6 +48,8 @@ class QueuedMessage:
     description: str
     # Optional message mapping information for replies/reactions
     mapping_info: Optional[dict[str, Any]] = None
+    # Optional Matrix event information for delivery status reactions
+    delivery_info: Optional[dict[str, Any]] = None
 
 
 class MessageQueue:
@@ -389,6 +391,7 @@ class MessageQueue:
         *args: Any,
         description: str = "",
         mapping_info: Optional[dict[str, Any]] = None,
+        delivery_info: Optional[dict[str, Any]] = None,
         wait: bool = False,
         timeout: Optional[float] = None,
         **kwargs: Any,
@@ -399,6 +402,7 @@ class MessageQueue:
         Parameters:
             description: Human-readable description used for logging.
             mapping_info: Optional metadata to correlate the sent message with an external event (e.g., Matrix IDs); stored after a successful send.
+            delivery_info: Optional metadata used to send Matrix delivery status reactions.
             wait: If True, wait for queue space to become available instead of immediately dropping. Defaults to False.
             timeout: Maximum time in seconds to wait for queue space when `wait` is True; `None` means wait indefinitely.
 
@@ -431,6 +435,7 @@ class MessageQueue:
                 kwargs=kwargs,
                 description=description,
                 mapping_info=mapping_info,
+                delivery_info=delivery_info,
             )
 
             # Try to enqueue the message
@@ -747,6 +752,7 @@ class MessageQueue:
                     exec_ref = self._executor
                     if exec_ref is None:
                         raise RuntimeError("MessageQueue executor is not initialized")
+                    self._prepare_delivery_tracking(current_message, loop)
                     result = await loop.run_in_executor(
                         exec_ref,
                         partial(
@@ -768,6 +774,7 @@ class MessageQueue:
                         logger.debug(
                             f"Successfully sent queued message: {current_message.description}"
                         )
+                        self._mark_delivery_sent(current_message)
 
                         # Handle message mapping if provided
                         if current_message.mapping_info:
@@ -844,6 +851,110 @@ class MessageQueue:
                 await asyncio.sleep(
                     CONNECTION_RETRY_SLEEP_SEC
                 )  # Prevent tight error loop
+
+    def _prepare_delivery_tracking(
+        self,
+        message: QueuedMessage,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Attach ACK callback metadata to a queued Meshtastic send."""
+        info = message.delivery_info
+        if not info:
+            return
+
+        info["_loop"] = loop
+        info["_state"] = {"done": False}
+        if info.get("request_ack", True):
+            message.kwargs["wantAck"] = True
+            message.kwargs.setdefault(
+                "onResponse",
+                self._build_delivery_response_callback(info),
+            )
+
+    def _build_delivery_response_callback(
+        self,
+        delivery_info: dict[str, Any],
+    ) -> Callable[[dict[str, Any]], None]:
+        """Build a Meshtastic ACK/NAK callback that reacts on Matrix."""
+
+        def _on_response(packet: dict[str, Any]) -> None:
+            state = delivery_info.get("_state")
+            if isinstance(state, dict):
+                state["done"] = True
+
+            decoded = packet.get("decoded") if isinstance(packet, dict) else None
+            routing = decoded.get("routing") if isinstance(decoded, dict) else None
+            error_reason = (
+                routing.get("errorReason") if isinstance(routing, dict) else None
+            )
+            reaction_key = (
+                "nak" if error_reason and error_reason != "NONE" else "ack"
+            )
+            self._send_delivery_reaction(delivery_info, reaction_key)
+
+        return _on_response
+
+    def _mark_delivery_sent(self, message: QueuedMessage) -> None:
+        """React when the packet has been accepted by the local Meshtastic API."""
+        info = message.delivery_info
+        if not info:
+            return
+
+        state = info.get("_state")
+        if not (isinstance(state, dict) and state.get("done")):
+            self._send_delivery_reaction(info, "sent")
+        if info.get("request_ack", True):
+            self._schedule_delivery_timeout(info)
+
+    def _send_delivery_reaction(
+        self,
+        delivery_info: dict[str, Any],
+        reaction_key: str,
+    ) -> None:
+        """Schedule a Matrix reaction for delivery status."""
+        room_id = delivery_info.get("room_id")
+        event_id = delivery_info.get("event_id")
+        reactions = delivery_info.get("reactions")
+        emoji = reactions.get(reaction_key) if isinstance(reactions, dict) else None
+        loop = delivery_info.get("_loop")
+
+        if not room_id or not event_id or not emoji:
+            return
+        if not isinstance(loop, asyncio.AbstractEventLoop) or loop.is_closed():
+            return
+
+        async def _react() -> None:
+            from mmrelay.matrix_utils import send_matrix_reaction
+
+            await send_matrix_reaction(str(room_id), str(event_id), str(emoji))
+
+        asyncio.run_coroutine_threadsafe(_react(), loop)
+
+    def _schedule_delivery_timeout(self, delivery_info: dict[str, Any]) -> None:
+        """React when Meshtastic ACK/NAK does not arrive in time."""
+        timeout_secs = delivery_info.get("timeout_secs", 60.0)
+        try:
+            timeout = float(timeout_secs)
+        except (TypeError, ValueError):
+            timeout = 60.0
+        if timeout <= 0:
+            return
+
+        loop = delivery_info.get("_loop")
+        state = delivery_info.get("_state")
+        if not isinstance(loop, asyncio.AbstractEventLoop) or loop.is_closed():
+            return
+        if not isinstance(state, dict):
+            return
+
+        async def _timeout() -> None:
+            await asyncio.sleep(timeout)
+            if state.get("done"):
+                return
+            state["done"] = True
+            self._send_delivery_reaction(delivery_info, "timeout")
+
+        loop.create_task(_timeout())
 
     def _should_send_message(self) -> bool:
         """
@@ -991,6 +1102,7 @@ def queue_message(
     *args: Any,
     description: str = "",
     mapping_info: Optional[dict[str, Any]] = None,
+    delivery_info: Optional[dict[str, Any]] = None,
     **kwargs: Any,
 ) -> bool:
     """
@@ -1009,6 +1121,7 @@ def queue_message(
         *args,
         description=description,
         mapping_info=mapping_info,
+        delivery_info=delivery_info,
         **kwargs,
     )
 

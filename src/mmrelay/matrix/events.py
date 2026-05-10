@@ -677,6 +677,11 @@ async def on_room_message(
             required=False,
         ):
             mapping_info = None
+            delivery_info = facade.create_delivery_info(
+                room.room_id,
+                event.event_id,
+                facade.config,
+            )
             if storage_enabled:
                 msgs_to_keep = facade._get_msgs_to_keep_config(facade.config)
 
@@ -688,13 +693,18 @@ async def on_room_message(
                     msgs_to_keep,
                 )
 
+            send_kwargs = facade.apply_delivery_ack_kwargs(
+                _meshtastic_destination_kwargs(room_config),
+                delivery_info,
+            )
             success = facade.queue_message(
                 meshtastic_interface.sendText,
                 text=full_message,
                 channelIndex=meshtastic_channel,
-                **_meshtastic_destination_kwargs(room_config),
+                **send_kwargs,
                 description=f"Message from {full_display_name}",
                 mapping_info=mapping_info,
+                delivery_info=delivery_info,
             )
 
             if success:

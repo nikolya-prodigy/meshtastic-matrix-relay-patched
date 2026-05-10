@@ -255,6 +255,11 @@ async def send_reply_to_meshtastic(
 
     try:
         mapping_info = None
+        delivery_info = facade.create_delivery_info(
+            room.room_id,
+            event.event_id,
+            effective_config,
+        )
         if storage_enabled:
             msgs_to_keep = facade._get_msgs_to_keep_config(effective_config)
 
@@ -263,14 +268,17 @@ async def send_reply_to_meshtastic(
             )
 
         if reply_id is not None:
+            send_kwargs = facade.apply_delivery_ack_kwargs({}, delivery_info)
             success = facade.queue_message(
                 facade.send_text_reply,
                 meshtastic_interface,
                 text=reply_message,
                 reply_id=reply_id,
                 channelIndex=meshtastic_channel,
+                **send_kwargs,
                 description=f"Reply from {full_display_name} to message {reply_id}",
                 mapping_info=mapping_info,
+                delivery_info=delivery_info,
             )
 
             if success:
@@ -291,12 +299,15 @@ async def send_reply_to_meshtastic(
                 )
                 return False
         else:
+            send_kwargs = facade.apply_delivery_ack_kwargs({}, delivery_info)
             success = facade.queue_message(
                 meshtastic_interface.sendText,
                 text=reply_message,
                 channelIndex=meshtastic_channel,
+                **send_kwargs,
                 description=f"Reply from {full_display_name} (fallback to regular message)",
                 mapping_info=mapping_info,
+                delivery_info=delivery_info,
             )
 
             if success:

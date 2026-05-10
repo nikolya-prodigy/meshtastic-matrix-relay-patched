@@ -147,6 +147,7 @@ def send_text_reply(
     destinationId: Any = facade.meshtastic.BROADCAST_ADDR,
     wantAck: bool = False,
     channelIndex: int = 0,
+    onResponse: Any = None,
 ) -> Any:
     """
     Send a Meshtastic text message that references (replies to) a previous Meshtastic message.
@@ -158,6 +159,7 @@ def send_text_reply(
         destinationId (Any, optional): Recipient address or node ID; defaults to broadcast.
         wantAck (bool, optional): If True, request an acknowledgement for the packet.
         channelIndex (int, optional): Channel index to send the packet on.
+        onResponse (Any, optional): Callback invoked by the Meshtastic API for ACK/NAK responses.
 
     Returns:
         The result returned by the interface's _sendPacket call (typically the sent MeshPacket), or
@@ -177,6 +179,7 @@ def send_text_reply(
             text,
             destinationId=destinationId,
             wantAck=wantAck,
+            onResponse=onResponse,
             channelIndex=channelIndex,
             replyId=reply_id,
         )
