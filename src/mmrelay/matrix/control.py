@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, replace
 from datetime import datetime
 import html
+import logging
 from typing import Any
 
 import mmrelay.matrix_utils as facade
@@ -27,6 +29,9 @@ health - Show mesh health summary
 nodes [online|limit|all] - List known Meshtastic nodes
 find <query> - Search known Meshtastic nodes and renumber the result
 node <number|node-id|name> - Show details for a node
+signal <number|node-id|name> - Show link quality for a node
+trace <number|node-id|name> - Trace route to a node
+telemetry <number|node-id|name> [device|environment|air|power|local] - Request telemetry from a node
 dm <number|node-id|name> - Create or open a direct Matrix room for a node
 channels - List Meshtastic channels known to the bridge
 rooms - List Matrix rooms managed by this bridge
@@ -458,6 +463,111 @@ def _entry_brief(entry: NodeEntry) -> str:
     )
 
 
+def _entry_signal(entry: NodeEntry, info: dict[str, Any] | None = None) -> str:
+    lines = [
+        f"Signal for {entry.title}",
+        f"id: {entry.node_id}",
+        f"link: {entry.hops}",
+        f"snr: {entry.snr}",
+    ]
+    if isinstance(info, dict) and info.get("rssi") is not None:
+        lines.append(f"rssi: {info['rssi']} dBm")
+    lines.extend(
+        (
+            f"battery: {entry.battery} {entry.voltage}",
+            f"last: {entry.last_heard}",
+        )
+    )
+    return "\n".join(lines)
+
+
+def _node_info_for_entry(interface: Any, entry: NodeEntry) -> dict[str, Any] | None:
+    nodes = getattr(interface, "nodes", None)
+    if not isinstance(nodes, dict):
+        return None
+    for node_id, info in nodes.items():
+        if not isinstance(info, dict):
+            continue
+        user = info.get("user") if isinstance(info.get("user"), dict) else {}
+        stable_node_id = str(user.get("id") or node_id)
+        if stable_node_id == entry.node_id or str(node_id) == entry.node_id:
+            return info
+    return None
+
+
+def _trace_hop_limit(interface: Any) -> int:
+    local_node = getattr(interface, "localNode", None)
+    local_config = getattr(local_node, "localConfig", None)
+    lora = getattr(local_config, "lora", None)
+    raw_limit = getattr(lora, "hop_limit", None)
+    if raw_limit is None:
+        raw_limit = getattr(lora, "hopLimit", None)
+    try:
+        return max(1, min(7, int(raw_limit)))
+    except (TypeError, ValueError):
+        return 7
+
+
+def _telemetry_type_from_args(args: str) -> str | None:
+    tokens = args.split(maxsplit=1)
+    token = tokens[1].strip().casefold() if len(tokens) > 1 else "device"
+    return {
+        "device": "device_metrics",
+        "environment": "environment_metrics",
+        "env": "environment_metrics",
+        "air": "air_quality_metrics",
+        "air_quality": "air_quality_metrics",
+        "airquality": "air_quality_metrics",
+        "power": "power_metrics",
+        "local": "local_stats",
+        "localstats": "local_stats",
+        "local_stats": "local_stats",
+    }.get(token)
+
+
+class _MeshtasticSummaryHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(level=logging.INFO)
+        self.lines: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage().strip()
+        if message:
+            self.lines.append(message)
+
+
+def _capture_meshtastic_summary(action: Any) -> tuple[list[str], str | None]:
+    logger = logging.getLogger("meshtastic.mesh_interface_runtime.flows")
+    handler = _MeshtasticSummaryHandler()
+    old_level = logger.level
+    logger.addHandler(handler)
+    if logger.getEffectiveLevel() > logging.INFO:
+        logger.setLevel(logging.INFO)
+    try:
+        action()
+    except Exception as exc:  # noqa: BLE001 - surface node/API failures to Matrix
+        return handler.lines, str(exc) or exc.__class__.__name__
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+    return handler.lines, None
+
+
+def _format_meshtastic_summary(
+    title: str,
+    lines: list[str],
+    error: str | None,
+) -> str:
+    if lines:
+        body = "\n".join(lines)
+        if error:
+            body += f"\n\nwarning: {error}"
+        return f"{title}\n\n{body}"
+    if error:
+        return f"{title}\n\nfailed: {error}"
+    return f"{title}\n\nNo response was received."
+
+
 def _node_search_text(entry: NodeEntry) -> str:
     return " ".join(
         (
@@ -724,6 +834,87 @@ async def _handle_node_command(room: Any, event: Any, args: str) -> bool:
         )
         return True
     await send_control_message(room.room_id, _entry_brief(entry))
+    return True
+
+
+async def _handle_signal_command(room: Any, event: Any, args: str) -> bool:
+    entry = _resolve_node_entry(room, event, args)
+    interface = _get_interface()
+    if entry is None or interface is None:
+        await send_control_message(
+            room.room_id,
+            "Node not found. Run `nodes` or `find <query>`, then use `signal <number>`.",
+        )
+        return True
+    await send_control_message(
+        room.room_id,
+        _entry_signal(entry, _node_info_for_entry(interface, entry)),
+    )
+    return True
+
+
+async def _handle_trace_command(room: Any, event: Any, args: str) -> bool:
+    entry = _resolve_node_entry(room, event, args)
+    interface = _get_interface()
+    if entry is None or interface is None:
+        await send_control_message(
+            room.room_id,
+            "Node not found. Run `nodes` or `find <query>`, then use `trace <number>`.",
+        )
+        return True
+    if not callable(getattr(interface, "sendTraceRoute", None)):
+        await send_control_message(room.room_id, "Traceroute is not supported by this Meshtastic API.")
+        return True
+
+    await send_control_message(room.room_id, f"Tracing route to {entry.title}...")
+    hop_limit = _trace_hop_limit(interface)
+
+    def _action() -> None:
+        interface.sendTraceRoute(entry.node_id, hopLimit=hop_limit, channelIndex=0)
+
+    lines, error = await asyncio.to_thread(_capture_meshtastic_summary, _action)
+    await send_control_message(
+        room.room_id,
+        _format_meshtastic_summary(f"Trace route for {entry.title}", lines, error),
+    )
+    return True
+
+
+async def _handle_telemetry_command(room: Any, event: Any, args: str) -> bool:
+    entry = _resolve_node_entry(room, event, args)
+    interface = _get_interface()
+    if entry is None or interface is None:
+        await send_control_message(
+            room.room_id,
+            "Node not found. Run `nodes` or `find <query>`, then use `telemetry <number>`.",
+        )
+        return True
+    telemetry_type = _telemetry_type_from_args(args)
+    if telemetry_type is None:
+        await send_control_message(
+            room.room_id,
+            "Usage: telemetry <number|node-id|name> [device|environment|air|power|local]",
+        )
+        return True
+    if not callable(getattr(interface, "sendTelemetry", None)):
+        await send_control_message(room.room_id, "Telemetry requests are not supported by this Meshtastic API.")
+        return True
+
+    await send_control_message(room.room_id, f"Requesting telemetry from {entry.title}...")
+
+    def _action() -> None:
+        interface.sendTelemetry(
+            destinationId=entry.node_id,
+            wantResponse=True,
+            channelIndex=0,
+            telemetryType=telemetry_type,
+        )
+
+    lines, error = await asyncio.to_thread(_capture_meshtastic_summary, _action)
+    await send_control_message(
+        room.room_id,
+        _format_meshtastic_summary(f"Telemetry for {entry.title}", lines, error),
+    )
     return True
 
 
@@ -1005,6 +1196,18 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
         return handled
     if command.casefold() == "node":
         handled = await _handle_node_command(room, event, args)
+        await _send_control_reaction(room, event, "✅")
+        return handled
+    if command.casefold() == "signal":
+        handled = await _handle_signal_command(room, event, args)
+        await _send_control_reaction(room, event, "✅")
+        return handled
+    if command.casefold() == "trace":
+        handled = await _handle_trace_command(room, event, args)
+        await _send_control_reaction(room, event, "✅")
+        return handled
+    if command.casefold() == "telemetry":
+        handled = await _handle_telemetry_command(room, event, args)
         await _send_control_reaction(room, event, "✅")
         return handled
     if command.casefold() == "dm":

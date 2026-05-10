@@ -275,6 +275,7 @@ class TestSendTextReply:
             "Hello",
             destinationId="^all",
             wantAck=False,
+            onResponse=None,
             channelIndex=0,
             replyId=100,
         )
@@ -345,6 +346,7 @@ class TestSendTextReply:
             "Reply",
             destinationId="^all",
             wantAck=True,
+            onResponse=None,
             channelIndex=3,
             replyId=200,
         )

@@ -27,6 +27,8 @@ def _interface() -> SimpleNamespace:
     now = time.time()
     interface = SimpleNamespace(
         sendText=MagicMock(),
+        sendTraceRoute=MagicMock(),
+        sendTelemetry=MagicMock(),
         localNode=SimpleNamespace(
             channels=[
                 SimpleNamespace(
@@ -281,6 +283,69 @@ async def test_node_command_accepts_node_id_without_cached_nodes(monkeypatch) ->
     assert handled is True
     assert "NEW New Node" in sent[-1]
     assert "id: !new" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_signal_command_reports_cached_link(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+
+    await control.handle_control_room_message(_room(), _event("nodes"))
+    handled = await control.handle_control_room_message(_room(), _event("signal 1"))
+
+    assert handled is True
+    assert "Signal for NEW New Node" in sent[-1]
+    assert "link: 1 hop away" in sent[-1]
+    assert "snr: -7.5 dB" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_trace_command_requests_route(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+
+    def capture(action):
+        action()
+        return ["Route traced towards destination:", "!local --> !new (-7.5dB)"], None
+
+    monkeypatch.setattr(control, "_capture_meshtastic_summary", capture)
+
+    await control.handle_control_room_message(_room(), _event("nodes"))
+    handled = await control.handle_control_room_message(_room(), _event("trace 1"))
+
+    assert handled is True
+    interface.sendTraceRoute.assert_called_once_with("!new", hopLimit=7, channelIndex=0)
+    assert "Tracing route to NEW New Node..." in sent[-2]
+    assert "Route traced towards destination:" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_telemetry_command_requests_environment_metrics(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+
+    def capture(action):
+        action()
+        return ["Telemetry received:", "environmentMetrics:", "  temperature: 23.4"], None
+
+    monkeypatch.setattr(control, "_capture_meshtastic_summary", capture)
+
+    await control.handle_control_room_message(_room(), _event("nodes"))
+    handled = await control.handle_control_room_message(
+        _room(),
+        _event("telemetry 1 environment"),
+    )
+
+    assert handled is True
+    interface.sendTelemetry.assert_called_once_with(
+        destinationId="!new",
+        wantResponse=True,
+        channelIndex=0,
+        telemetryType="environment_metrics",
+    )
+    assert "Requesting telemetry from NEW New Node..." in sent[-2]
+    assert "Telemetry received:" in sent[-1]
 
 
 @pytest.mark.asyncio

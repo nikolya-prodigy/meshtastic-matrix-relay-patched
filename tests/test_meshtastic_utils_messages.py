@@ -1050,6 +1050,7 @@ class TestMeshtasticUtils(unittest.TestCase):
             "Hello",
             destinationId="123456789",
             wantAck=False,
+            onResponse=None,
             channelIndex=0,
             replyId=999,
         )
@@ -1316,8 +1317,7 @@ class TestTextReplyFunctionality(unittest.TestCase):
     def test_send_text_reply_client_send_failure(self):
         """send_text_reply returns None when client's send operation raises."""
         mock_client = MagicMock()
-        mock_client._generatePacketId.return_value = 12345
-        mock_client._sendPacket.side_effect = RuntimeError("Send failed")
+        mock_client.sendText.side_effect = RuntimeError("Send failed")
 
         with patch("mmrelay.meshtastic_utils.logger") as mock_logger:
             result = send_text_reply(mock_client, "test message", 12345)
