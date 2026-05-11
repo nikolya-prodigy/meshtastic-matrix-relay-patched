@@ -8,6 +8,7 @@ from datetime import datetime
 import html
 import logging
 import re
+import threading
 from typing import Any
 
 import mmrelay.matrix_utils as facade
@@ -705,49 +706,101 @@ def _run_trace_route_request(
     try:
         from meshtastic.mesh_interface_runtime.flows import WAIT_ATTR_TRACEROUTE
         from meshtastic.protobuf import mesh_pb2, portnums_pb2
+        from pubsub import pub
+        from pubsub.core.topicexc import TopicNameError
     except Exception as exc:  # noqa: BLE001 - dependency/runtime problem
         return [], f"Traceroute support is unavailable: {exc}"
 
     response_packet: dict[str, Any] | None = None
     response_error: str | None = None
+    sent_request_id: int | None = None
+    destination_num = _parse_node_num(destination_id)
+    response_event = threading.Event()
 
-    def on_response(packet: dict[str, Any]) -> None:
+    def on_packet(packet: dict[str, Any], interface: Any | None = None) -> None:
         nonlocal response_packet, response_error
-        request_id = _extract_request_id_from_packet(interface, packet)
+        if not isinstance(packet, dict):
+            return
+        if interface is not None and id(interface) != id(trace_interface):
+            return
+        request_id = _extract_request_id_from_packet(trace_interface, packet)
+        if (
+            sent_request_id is not None
+            and request_id is not None
+            and request_id != sent_request_id
+        ):
+            return
         decoded = packet.get("decoded", {})
         if isinstance(decoded, dict):
             error_reason = decoded.get("routing", {}).get("errorReason")
             if error_reason is not None and error_reason != "NONE":
                 response_error = f"routing error: {error_reason}"
-                _mark_trace_wait_finished(interface, WAIT_ATTR_TRACEROUTE, request_id)
+                response_event.set()
                 return
+        if not _is_trace_response_packet(
+            packet,
+            portnums_pb2,
+            destination_num=destination_num,
+        ):
+            return
         response_packet = packet
-        _mark_trace_wait_finished(interface, WAIT_ATTR_TRACEROUTE, request_id)
+        _mark_trace_wait_finished(trace_interface, WAIT_ATTR_TRACEROUTE, request_id)
+        response_event.set()
 
+    trace_interface = interface
     try:
+        pub.subscribe(on_packet, "meshtastic.receive")
         payload = mesh_pb2.RouteDiscovery()
         sent_packet = interface._send_data_with_wait(
             payload,
             destinationId=destination_id,
             portNum=portnums_pb2.PortNum.TRACEROUTE_APP,
             wantResponse=True,
-            onResponse=on_response,
             channelIndex=0,
             hopLimit=hop_limit,
             response_wait_attr=WAIT_ATTR_TRACEROUTE,
         )
-        request_id = _extract_request_id_from_sent_packet(interface, sent_packet)
-        if request_id is None:
+        sent_request_id = _extract_request_id_from_sent_packet(interface, sent_packet)
+        if sent_request_id is None:
             return [], "failed to get traceroute request id"
         wait_factor = _trace_wait_factor(interface, hop_limit)
-        interface.waitForTraceRoute(wait_factor, request_id=request_id)
+        response_event.wait(TRACE_ROUTE_BASE_TIMEOUT_SECONDS * wait_factor)
     except Exception as exc:  # noqa: BLE001 - surface API failures to Matrix
         if response_packet is None:
             return [], response_error or str(exc) or exc.__class__.__name__
+    finally:
+        try:
+            pub.unsubscribe(on_packet, "meshtastic.receive")
+        except TopicNameError:
+            pass
+        except Exception:
+            facade.logger.debug("Failed to unsubscribe trace listener", exc_info=True)
 
     if response_packet is None:
         return [], response_error
     return _format_trace_route_packet(interface, response_packet), response_error
+
+
+def _is_trace_response_packet(
+    packet: dict[str, Any],
+    portnums_pb2: Any,
+    destination_num: int | None,
+) -> bool:
+    decoded = packet.get("decoded", {})
+    if not isinstance(decoded, dict):
+        return False
+    portnum = decoded.get("portnum")
+    trace_port_name = portnums_pb2.PortNum.Name(portnums_pb2.PortNum.TRACEROUTE_APP)
+    if portnum not in (trace_port_name, portnums_pb2.PortNum.TRACEROUTE_APP):
+        return False
+    if decoded.get("wantResponse") is True or decoded.get("want_response") is True:
+        return False
+    if destination_num is not None:
+        source_num = _trace_endpoint(decoded, packet, decoded_key="source", packet_key="from")
+        if source_num not in (0, destination_num):
+            return False
+    payload = decoded.get("payload")
+    return bool(payload)
 
 
 def _extract_request_id_from_packet(interface: Any, packet: dict[str, Any]) -> int | None:
