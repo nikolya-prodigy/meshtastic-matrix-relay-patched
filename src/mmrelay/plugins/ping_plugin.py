@@ -112,6 +112,25 @@ class Plugin(BasePlugin):
         response = auto_pong.get("response", "pong")
         return response if isinstance(response, str) and response else "pong"
 
+    def is_auto_pong_channel_enabled(
+        self, channel: int | None, is_direct_message: bool
+    ) -> bool:
+        if is_direct_message:
+            return True
+
+        auto_pong = self.config.get("auto_pong", {})
+        if not isinstance(auto_pong, dict):
+            return False
+
+        raw_channels = auto_pong.get("channels", "all")
+        if raw_channels == "all":
+            return True
+        if isinstance(raw_channels, int):
+            return channel == raw_channels
+        if isinstance(raw_channels, list):
+            return channel in {ch for ch in raw_channels if isinstance(ch, int)}
+        return False
+
     async def handle_meshtastic_message(
         self,
         packet: dict[str, Any],
@@ -135,6 +154,7 @@ class Plugin(BasePlugin):
         channel = DEFAULT_CHANNEL if raw_channel is None else raw_channel
 
         auto_pong_response = self.get_auto_pong_response(message)
+        is_auto_pong = auto_pong_response is not None
         if auto_pong_response is not None:
             reply_message = auto_pong_response
         elif self.get_mimic_mode():
@@ -185,7 +205,15 @@ class Plugin(BasePlugin):
             self.logger.warning("Direct message missing fromId; cannot reply")
             return True
 
-        if not self.is_channel_enabled(channel, is_direct_message=is_direct_message):
+        if is_auto_pong:
+            channel_enabled = self.is_auto_pong_channel_enabled(
+                channel, is_direct_message
+            )
+        else:
+            channel_enabled = self.is_channel_enabled(
+                channel, is_direct_message=is_direct_message
+            )
+        if not channel_enabled:
             return False
 
         self.logger.info(

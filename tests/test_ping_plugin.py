@@ -1028,13 +1028,65 @@ class TestPingPluginAutoPong(unittest.TestCase):
                 packet, "formatted_message", "TestNode", "TestMesh"
             )
             self.assertTrue(result)
-            self.plugin.is_channel_enabled.assert_called_once_with(
-                2, is_direct_message=True
-            )
+            self.plugin.is_channel_enabled.assert_not_called()
             mock_sleep.assert_called_once_with(1.0)
             self.plugin.send_message.assert_called_once_with(
                 text="pong", channel=2, destination_id="!12345678", reply_id=77
             )
+
+        asyncio.run(run_test())
+
+    @patch("mmrelay.meshtastic_utils.connect_meshtastic")
+    @patch("asyncio.sleep")
+    def test_auto_pong_does_not_require_static_matrix_room_mapping(
+        self, mock_sleep, mock_connect
+    ):
+        self.plugin.is_channel_enabled = MagicMock(return_value=False)
+        mock_client = MagicMock()
+        mock_client.myInfo.my_node_num = 123456789
+        mock_connect.return_value = mock_client
+
+        packet = {
+            "decoded": {"text": "ping"},
+            "channel": 0,
+            "fromId": "!12345678",
+            "to": BROADCAST_NUM,
+            "id": 88,
+        }
+
+        async def run_test() -> None:
+            result = await self.plugin.handle_meshtastic_message(
+                packet, "formatted_message", "TestNode", "TestMesh"
+            )
+            self.assertTrue(result)
+            self.plugin.is_channel_enabled.assert_not_called()
+            mock_sleep.assert_called_once_with(1.0)
+            self.plugin.send_message.assert_called_once_with(
+                text="pong", channel=0, reply_id=88
+            )
+
+        asyncio.run(run_test())
+
+    @patch("mmrelay.meshtastic_utils.connect_meshtastic")
+    def test_auto_pong_can_be_limited_to_channels(self, mock_connect):
+        self.plugin.config["auto_pong"]["channels"] = [1]
+        mock_client = MagicMock()
+        mock_client.myInfo.my_node_num = 123456789
+        mock_connect.return_value = mock_client
+
+        packet = {
+            "decoded": {"text": "ping"},
+            "channel": 0,
+            "fromId": "!12345678",
+            "to": BROADCAST_NUM,
+        }
+
+        async def run_test() -> None:
+            result = await self.plugin.handle_meshtastic_message(
+                packet, "formatted_message", "TestNode", "TestMesh"
+            )
+            self.assertFalse(result)
+            self.plugin.send_message.assert_not_called()
 
         asyncio.run(run_test())
 
