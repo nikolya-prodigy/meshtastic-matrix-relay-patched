@@ -83,6 +83,31 @@ def _interface() -> SimpleNamespace:
     return interface
 
 
+def _trace_interface() -> SimpleNamespace:
+    interface = _interface()
+    interface.nodes.update(
+        {
+            "!69852b48": {
+                "user": {
+                    "id": "!69852b48",
+                    "shortName": "PSIX",
+                    "longName": "Psix_garage",
+                    "hwModel": "HELTEC_V3",
+                }
+            },
+            "!aca9df2c": {
+                "user": {
+                    "id": "!aca9df2c",
+                    "shortName": "NICK",
+                    "longName": "Nikolya",
+                    "hwModel": "HELTEC_V4",
+                }
+            },
+        }
+    )
+    return interface
+
+
 def _capture_messages(monkeypatch) -> list[str]:
     sent: list[str] = []
     monkeypatch.setattr(
@@ -319,6 +344,23 @@ async def test_trace_command_requests_route(monkeypatch) -> None:
     interface.sendTraceRoute.assert_called_once_with("!new", hopLimit=7, channelIndex=0)
     scheduled.assert_called_once()
     assert "Tracing route to NEW New Node..." in sent[-1]
+
+
+def test_trace_summary_replaces_node_ids_with_names() -> None:
+    summary = control._format_meshtastic_summary(
+        "Trace route for PSIX Psix_garage",
+        [
+            "Route traced towards destination:",
+            "!69852b48 --> !aca9df2c (1.5dB)",
+            "Route traced back to us:",
+            "!aca9df2c --> !69852b48 (-0.5dB)",
+        ],
+        None,
+        interface=_trace_interface(),
+    )
+
+    assert "PSIX Psix_garage (!69852b48) --> NICK Nikolya (!aca9df2c)" in summary
+    assert "NICK Nikolya (!aca9df2c) --> PSIX Psix_garage (!69852b48)" in summary
 
 
 @pytest.mark.asyncio

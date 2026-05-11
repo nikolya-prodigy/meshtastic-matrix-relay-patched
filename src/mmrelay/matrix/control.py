@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 import html
 import logging
+import re
 from typing import Any
 
 import mmrelay.matrix_utils as facade
@@ -54,6 +55,7 @@ TRACE_ROUTE_BASE_TIMEOUT_SECONDS = 4.0
 TELEMETRY_TIMEOUT_SECONDS = 30.0
 _NODE_INDEX_CACHE: dict[tuple[str, str], list["NodeEntry"]] = {}
 _CONTROL_BACKGROUND_REQUESTS: set[tuple[str, ...]] = set()
+_NODE_ID_RE = re.compile(r"![0-9a-fA-F]{8}")
 
 
 @dataclass(frozen=True)
@@ -588,7 +590,10 @@ async def _send_meshtastic_summary_result(
         _capture_meshtastic_summary,
         _action_with_timeout,
     )
-    await send_control_message(room_id, _format_meshtastic_summary(title, lines, error))
+    await send_control_message(
+        room_id,
+        _format_meshtastic_summary(title, lines, error, interface=interface),
+    )
 
 
 def _schedule_meshtastic_summary_result(
@@ -630,7 +635,9 @@ def _format_meshtastic_summary(
     title: str,
     lines: list[str],
     error: str | None,
+    interface: Any | None = None,
 ) -> str:
+    lines = _replace_node_ids_with_names(lines, interface)
     if lines:
         body = "\n".join(lines)
         if error:
@@ -639,6 +646,31 @@ def _format_meshtastic_summary(
     if error:
         return f"{title}\n\nfailed: {error}"
     return f"{title}\n\nNo response was received."
+
+
+def _replace_node_ids_with_names(lines: list[str], interface: Any | None) -> list[str]:
+    if interface is None:
+        return lines
+
+    labels = _node_id_labels(interface)
+    if not labels:
+        return lines
+
+    def replace(match: re.Match[str]) -> str:
+        node_id = match.group(0)
+        return labels.get(node_id.casefold(), node_id)
+
+    return [_NODE_ID_RE.sub(replace, line) for line in lines]
+
+
+def _node_id_labels(interface: Any) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for entry in _build_node_index(interface):
+        node_id = entry.node_id
+        if not node_id.startswith("!"):
+            continue
+        labels[node_id.casefold()] = f"{entry.title} ({node_id})"
+    return labels
 
 
 def _node_search_text(entry: NodeEntry) -> str:
