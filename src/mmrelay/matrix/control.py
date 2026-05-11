@@ -596,6 +596,22 @@ async def _send_meshtastic_summary_result(
     )
 
 
+async def _send_trace_route_result(
+    room_id: str,
+    title: str,
+    interface: Any,
+    destination_id: str,
+    hop_limit: int,
+) -> None:
+    lines, error = await asyncio.to_thread(
+        _run_trace_route_request,
+        interface,
+        destination_id,
+        hop_limit,
+    )
+    await send_control_message(room_id, _format_meshtastic_summary(title, lines, error))
+
+
 def _schedule_meshtastic_summary_result(
     room_id: str,
     title: str,
@@ -631,6 +647,39 @@ def _schedule_meshtastic_summary_result(
     return True
 
 
+def _schedule_trace_route_result(
+    room_id: str,
+    title: str,
+    interface: Any,
+    destination_id: str,
+    hop_limit: int,
+    request_key: tuple[str, ...],
+) -> bool:
+    if request_key in _CONTROL_BACKGROUND_REQUESTS:
+        return False
+    _CONTROL_BACKGROUND_REQUESTS.add(request_key)
+
+    task = asyncio.create_task(
+        _send_trace_route_result(
+            room_id,
+            title,
+            interface,
+            destination_id,
+            hop_limit,
+        )
+    )
+
+    def _log_background_error(done: asyncio.Task[None]) -> None:
+        _CONTROL_BACKGROUND_REQUESTS.discard(request_key)
+        try:
+            done.result()
+        except Exception:  # noqa: BLE001 - keep Matrix sync loop alive
+            facade.logger.exception("Meshtastic trace route request failed")
+
+    task.add_done_callback(_log_background_error)
+    return True
+
+
 def _format_meshtastic_summary(
     title: str,
     lines: list[str],
@@ -646,6 +695,248 @@ def _format_meshtastic_summary(
     if error:
         return f"{title}\n\nfailed: {error}"
     return f"{title}\n\nNo response was received."
+
+
+def _run_trace_route_request(
+    interface: Any,
+    destination_id: str,
+    hop_limit: int,
+) -> tuple[list[str], str | None]:
+    try:
+        from meshtastic.mesh_interface_runtime.flows import WAIT_ATTR_TRACEROUTE
+        from meshtastic.protobuf import mesh_pb2, portnums_pb2
+    except Exception as exc:  # noqa: BLE001 - dependency/runtime problem
+        return [], f"Traceroute support is unavailable: {exc}"
+
+    response_packet: dict[str, Any] | None = None
+    response_error: str | None = None
+
+    def on_response(packet: dict[str, Any]) -> None:
+        nonlocal response_packet, response_error
+        request_id = _extract_request_id_from_packet(interface, packet)
+        decoded = packet.get("decoded", {})
+        if isinstance(decoded, dict):
+            error_reason = decoded.get("routing", {}).get("errorReason")
+            if error_reason is not None and error_reason != "NONE":
+                response_error = f"routing error: {error_reason}"
+                _mark_trace_wait_finished(interface, WAIT_ATTR_TRACEROUTE, request_id)
+                return
+        response_packet = packet
+        _mark_trace_wait_finished(interface, WAIT_ATTR_TRACEROUTE, request_id)
+
+    try:
+        payload = mesh_pb2.RouteDiscovery()
+        sent_packet = interface._send_data_with_wait(
+            payload,
+            destinationId=destination_id,
+            portNum=portnums_pb2.PortNum.TRACEROUTE_APP,
+            wantResponse=True,
+            onResponse=on_response,
+            channelIndex=0,
+            hopLimit=hop_limit,
+            response_wait_attr=WAIT_ATTR_TRACEROUTE,
+        )
+        request_id = _extract_request_id_from_sent_packet(interface, sent_packet)
+        if request_id is None:
+            return [], "failed to get traceroute request id"
+        wait_factor = _trace_wait_factor(interface, hop_limit)
+        interface.waitForTraceRoute(wait_factor, request_id=request_id)
+    except Exception as exc:  # noqa: BLE001 - surface API failures to Matrix
+        if response_packet is None:
+            return [], response_error or str(exc) or exc.__class__.__name__
+
+    if response_packet is None:
+        return [], response_error
+    return _format_trace_route_packet(interface, response_packet), response_error
+
+
+def _extract_request_id_from_packet(interface: Any, packet: dict[str, Any]) -> int | None:
+    extractor = getattr(interface, "_extract_request_id_from_packet", None)
+    if callable(extractor):
+        try:
+            return extractor(packet)
+        except Exception:  # noqa: BLE001 - best effort for private API
+            return None
+    decoded = packet.get("decoded", {})
+    request_id = decoded.get("requestId") if isinstance(decoded, dict) else None
+    return request_id if isinstance(request_id, int) else None
+
+
+def _extract_request_id_from_sent_packet(interface: Any, packet: Any) -> int | None:
+    extractor = getattr(interface, "_extract_request_id_from_sent_packet", None)
+    if callable(extractor):
+        try:
+            return extractor(packet)
+        except Exception:  # noqa: BLE001 - best effort for private API
+            return None
+    packet_id = getattr(packet, "id", None)
+    return packet_id if isinstance(packet_id, int) else None
+
+
+def _mark_trace_wait_finished(interface: Any, wait_attr: str, request_id: int | None) -> None:
+    marker = getattr(interface, "_mark_wait_acknowledged", None)
+    if callable(marker):
+        try:
+            marker(wait_attr, request_id=request_id)
+        except TypeError:
+            marker(wait_attr)
+
+
+def _trace_wait_factor(interface: Any, hop_limit: int) -> int:
+    nodes = getattr(interface, "nodes", None)
+    node_count = len(nodes) if isinstance(nodes, dict) else 0
+    nodes_based_factor = (node_count - 1) if node_count else (hop_limit + 1)
+    return max(1, min(nodes_based_factor, hop_limit + 1))
+
+
+def _format_trace_route_packet(interface: Any, packet: dict[str, Any]) -> list[str]:
+    try:
+        from meshtastic.protobuf import mesh_pb2
+        from google.protobuf.message import DecodeError
+    except Exception as exc:  # noqa: BLE001 - dependency/runtime problem
+        return [f"Failed to parse traceroute response: {exc}"]
+
+    decoded = packet.get("decoded", {})
+    payload = decoded.get("payload") if isinstance(decoded, dict) else None
+    route_discovery = mesh_pb2.RouteDiscovery()
+    try:
+        route_discovery.ParseFromString(payload)
+    except (DecodeError, TypeError):
+        return ["Failed to parse traceroute response payload."]
+
+    origin = _trace_endpoint(decoded, packet, decoded_key="dest", packet_key="to")
+    destination = _trace_endpoint(decoded, packet, decoded_key="source", packet_key="from")
+    route = [origin, *list(route_discovery.route), destination]
+    route_back = _trace_route_back(route_discovery, origin, destination, decoded, packet)
+    return _format_trace_route_data(
+        interface,
+        route,
+        list(route_discovery.snr_towards),
+        route_back,
+        list(route_discovery.snr_back),
+    )
+
+
+def _format_trace_route_data(
+    interface: Any,
+    route: list[int],
+    snr_towards: list[int],
+    route_back: list[int],
+    snr_back: list[int],
+) -> list[str]:
+    lines = ["Route towards destination:"]
+    lines.extend(_format_trace_route_path(interface, route, snr_towards))
+    if route_back:
+        lines.append("")
+        lines.append("Route back to us:")
+        lines.extend(_format_trace_route_path(interface, route_back, snr_back))
+    return lines
+
+
+def _trace_route_back(
+    route_discovery: Any,
+    origin: int,
+    destination: int,
+    decoded: dict[str, Any],
+    packet: dict[str, Any],
+) -> list[int]:
+    route_back = list(route_discovery.route_back)
+    if not route_back:
+        return []
+    snr_back = list(route_discovery.snr_back)
+    has_reliable_endpoints = (
+        packet.get("hopStart") is not None
+        or decoded.get("bitfield") not in (None, 0)
+        or len(snr_back) == len(route_back) + 1
+    )
+    if has_reliable_endpoints:
+        return [destination, *route_back, origin]
+    return route_back
+
+
+def _trace_endpoint(
+    decoded: dict[str, Any],
+    packet: dict[str, Any],
+    decoded_key: str,
+    packet_key: str,
+) -> int:
+    for value in (decoded.get(decoded_key), packet.get(packet_key)):
+        parsed = _parse_node_num(value)
+        if parsed is not None:
+            return parsed
+    return 0
+
+
+def _parse_node_num(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lstrip("!")
+        if not text:
+            return None
+        try:
+            return int(text, 16) if any(c in "abcdefABCDEF" for c in text) else int(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _format_trace_route_path(
+    interface: Any,
+    route: list[int],
+    snr_values: list[int],
+) -> list[str]:
+    lines: list[str] = []
+    use_snr = len(snr_values) == max(0, len(route) - 1)
+    for index, node_num in enumerate(route):
+        if index > 0:
+            snr = _format_trace_snr(snr_values[index - 1] if use_snr else None)
+            lines.append(f"↓ {snr} dB")
+        lines.append(_trace_node_label(interface, node_num))
+    return lines
+
+
+def _format_trace_snr(value: int | None) -> str:
+    if value is None or value == -128:
+        return "?"
+    snr = value / 4
+    return str(int(snr)) if snr.is_integer() else str(round(snr, 2))
+
+
+def _trace_node_label(interface: Any, node_num: int) -> str:
+    if node_num == 0:
+        return "Unknown node"
+    hex_id = f"!{node_num:08x}"
+    labels = _node_num_labels(interface)
+    return labels.get(node_num) or labels.get(hex_id.casefold()) or f"Meshtastic {hex_id[-4:]}"
+
+
+def _node_num_labels(interface: Any) -> dict[Any, str]:
+    labels: dict[Any, str] = {}
+    nodes = getattr(interface, "nodes", None)
+    if not isinstance(nodes, dict):
+        return labels
+
+    for node_key, info in nodes.items():
+        if not isinstance(info, dict):
+            continue
+        user = info.get("user") if isinstance(info.get("user"), dict) else {}
+        short_name = str(user.get("shortName") or "").strip()
+        long_name = str(user.get("longName") or "").strip()
+        if short_name and long_name and short_name != long_name:
+            label = f"{short_name} {long_name}"
+        else:
+            label = long_name or short_name
+        if not label:
+            continue
+        for candidate in _node_key_candidates(node_key, info):
+            parsed = _parse_node_num(candidate)
+            if parsed is not None:
+                labels[parsed] = label
+                labels[f"!{parsed:08x}".casefold()] = label
+            elif isinstance(candidate, str):
+                labels[candidate.casefold()] = label
+    return labels
 
 
 def _replace_node_ids_with_names(lines: list[str], interface: Any | None) -> list[str]:
@@ -977,15 +1268,12 @@ async def _handle_trace_command(room: Any, event: Any, args: str) -> bool:
     )
     hop_limit = _trace_hop_limit(interface)
 
-    def _action() -> None:
-        interface.sendTraceRoute(entry.node_id, hopLimit=hop_limit, channelIndex=0)
-
-    scheduled = _schedule_meshtastic_summary_result(
+    scheduled = _schedule_trace_route_result(
         room.room_id,
         f"Trace route for {entry.title}",
         interface,
-        TRACE_ROUTE_BASE_TIMEOUT_SECONDS,
-        _action,
+        entry.node_id,
+        hop_limit,
         ("trace", room.room_id, entry.node_id),
     )
     if not scheduled:

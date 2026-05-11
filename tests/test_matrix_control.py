@@ -329,20 +329,22 @@ async def test_trace_command_requests_route(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
     interface = _interface()
 
-    def schedule(_room_id, _title, _iface, _timeout, action, _request_key=None):
-        action()
-        return True
-
-    scheduled = MagicMock(side_effect=schedule)
+    scheduled = MagicMock(return_value=True)
     monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
-    monkeypatch.setattr(control, "_schedule_meshtastic_summary_result", scheduled)
+    monkeypatch.setattr(control, "_schedule_trace_route_result", scheduled)
 
     await control.handle_control_room_message(_room(), _event("nodes"))
     handled = await control.handle_control_room_message(_room(), _event("trace 1"))
 
     assert handled is True
-    interface.sendTraceRoute.assert_called_once_with("!new", hopLimit=7, channelIndex=0)
-    scheduled.assert_called_once()
+    scheduled.assert_called_once_with(
+        "!control:example.org",
+        "Trace route for NEW New Node",
+        interface,
+        "!new",
+        7,
+        ("trace", "!control:example.org", "!new"),
+    )
     assert "Tracing route to NEW New Node..." in sent[-1]
 
 
@@ -361,6 +363,32 @@ def test_trace_summary_replaces_node_ids_with_names() -> None:
 
     assert "PSIX Psix_garage (!69852b48) --> NICK Nikolya (!aca9df2c)" in summary
     assert "NICK Nikolya (!aca9df2c) --> PSIX Psix_garage (!69852b48)" in summary
+
+
+def test_trace_route_packet_formats_full_paths_like_client_apps() -> None:
+    lines = control._format_trace_route_data(
+        _trace_interface(),
+        route=[0x69852B48, 0x00003040, 0x00002B4C],
+        snr_towards=[-64, 20],
+        route_back=[0x00002B4C, 0xACA9DF2C, 0x69852B48],
+        snr_back=[-33, -18],
+    )
+
+    assert lines == [
+        "Route towards destination:",
+        "PSIX Psix_garage",
+        "↓ -16 dB",
+        "Meshtastic 3040",
+        "↓ 5 dB",
+        "Meshtastic 2b4c",
+        "",
+        "Route back to us:",
+        "Meshtastic 2b4c",
+        "↓ -8.25 dB",
+        "NICK Nikolya",
+        "↓ -4.5 dB",
+        "PSIX Psix_garage",
+    ]
 
 
 @pytest.mark.asyncio
