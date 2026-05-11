@@ -745,7 +745,8 @@ def _run_trace_route_request(
             return
         response_packet = packet
         _mark_trace_wait_finished(trace_interface, WAIT_ATTR_TRACEROUTE, request_id)
-        response_event.set()
+        if _trace_packet_has_return_path(packet):
+            response_event.set()
 
     trace_interface = interface
     try:
@@ -779,6 +780,23 @@ def _run_trace_route_request(
     if response_packet is None:
         return [], response_error
     return _format_trace_route_packet(interface, response_packet), response_error
+
+
+def _trace_packet_has_return_path(packet: dict[str, Any]) -> bool:
+    try:
+        from meshtastic.protobuf import mesh_pb2
+        from google.protobuf.message import DecodeError
+    except Exception:  # noqa: BLE001 - best-effort response ranking
+        return False
+
+    decoded = packet.get("decoded", {})
+    payload = decoded.get("payload") if isinstance(decoded, dict) else None
+    route_discovery = mesh_pb2.RouteDiscovery()
+    try:
+        route_discovery.ParseFromString(payload)
+    except (DecodeError, TypeError):
+        return False
+    return bool(route_discovery.route_back)
 
 
 def _is_trace_response_packet(
