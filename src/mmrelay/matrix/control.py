@@ -883,6 +883,10 @@ def _format_trace_route_data(
         lines.append("")
         lines.append("Route back to us:")
         lines.extend(_format_trace_route_path(interface, route_back, snr_back))
+    else:
+        lines.append("")
+        lines.append("Route back to us:")
+        lines.append("No return route was included in the traceroute response.")
     return lines
 
 

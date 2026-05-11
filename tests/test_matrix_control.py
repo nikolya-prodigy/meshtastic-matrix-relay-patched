@@ -391,6 +391,26 @@ def test_trace_route_packet_formats_full_paths_like_client_apps() -> None:
     ]
 
 
+def test_trace_route_packet_reports_missing_return_route() -> None:
+    lines = control._format_trace_route_data(
+        _trace_interface(),
+        route=[0x69852B48, 0xACA9DF2C],
+        snr_towards=[-82],
+        route_back=[],
+        snr_back=[],
+    )
+
+    assert lines == [
+        "Route towards destination:",
+        "PSIX Psix_garage",
+        "↓ -20.5 dB",
+        "NICK Nikolya",
+        "",
+        "Route back to us:",
+        "No return route was included in the traceroute response.",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_telemetry_command_requests_environment_metrics(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
