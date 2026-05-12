@@ -61,3 +61,16 @@ def test_invalid_prefix_template_falls_back_to_default():
 
     assert fragments[0].startswith("[1/")
     assert all(len(fragment.encode("utf-8")) <= 50 for fragment in fragments)
+
+
+def test_last_suffix_template_is_counted_in_payload_limit():
+    text = "0123456789 " * 20
+
+    fragments = split_text_for_meshtastic(
+        text,
+        _config(max_payload_bytes=55, last_suffix_template=" [end]"),
+    )
+
+    assert fragments[-1].endswith(" [end]")
+    assert not any(fragment.endswith(" [end]") for fragment in fragments[:-1])
+    assert all(len(fragment.encode("utf-8")) <= 55 for fragment in fragments)

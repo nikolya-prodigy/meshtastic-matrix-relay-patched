@@ -1,5 +1,6 @@
 import asyncio
 import statistics
+import time
 from typing import TYPE_CHECKING, Any
 
 # matrix-nio is not marked py.typed; keep import-untyped for strict mypy.
@@ -29,12 +30,28 @@ def _last_heard_timestamp(info: dict[str, Any]) -> float:
 
 
 def _is_online(info: dict[str, Any]) -> bool:
-    import time
-
     timestamp = _last_heard_timestamp(info)
     if timestamp <= 0:
         return False
     return 0 <= time.time() - timestamp <= ONLINE_NODE_WINDOW_SECONDS
+
+
+def _relative_age(timestamp: float) -> str:
+    if timestamp <= 0:
+        return "?"
+    seconds = int(time.time() - timestamp)
+    if seconds <= 0:
+        return "just now"
+    minutes, secs = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    if days:
+        return f"{days}d {hours}h ago"
+    if hours:
+        return f"{hours}h {minutes}m ago"
+    if minutes:
+        return f"{minutes}m {secs}s ago"
+    return f"{secs}s ago"
 
 if TYPE_CHECKING:
     from meshtastic.mesh_interface import MeshInterface
@@ -103,16 +120,35 @@ class Plugin(BasePlugin):
 
         # Check if any health metrics are available
         radios = len(meshtastic_client.nodes)
-        online_radios = len(
-            [
-                info
-                for info in meshtastic_client.nodes.values()
-                if isinstance(info, dict) and _is_online(info)
-            ]
+        online_radios = 0
+        direct_radios = 0
+        relayed_radios = 0
+        mqtt_radios = 0
+        last_heard = -1.0
+        for info in meshtastic_client.nodes.values():
+            if not isinstance(info, dict):
+                continue
+            timestamp = _last_heard_timestamp(info)
+            if timestamp > last_heard:
+                last_heard = timestamp
+            if _is_online(info):
+                online_radios += 1
+            hops = info.get("hopsAway")
+            if hops == 0:
+                direct_radios += 1
+            elif isinstance(hops, int) and hops > 0:
+                relayed_radios += 1
+            if info.get("viaMqtt") is True:
+                mqtt_radios += 1
+        link_line = (
+            f"Links: direct {direct_radios}, relayed {relayed_radios}, mqtt {mqtt_radios}"
         )
+        last_heard_line = f"Last Packet: {_relative_age(last_heard)}"
         if not battery_levels and not air_util_tx and not snr:
             return (
                 f"Nodes: {radios} / Online {online_radios}\n"
+                f"{link_line}\n"
+                f"{last_heard_line}\n"
                 "No nodes with health metrics found."
             )
 
@@ -147,6 +183,8 @@ class Plugin(BasePlugin):
 
         return (
             f"Nodes: {radios} / Online {online_radios}\n"
+            f"{link_line}\n"
+            f"{last_heard_line}\n"
             f"{battery_line}\n"
             f"Nodes with Low Battery (<= {LOW_BATTERY_THRESHOLD_PERCENT}%): {low_battery}\n"
             f"{air_util_line}\n"

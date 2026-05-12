@@ -35,6 +35,8 @@ from mmrelay.constants.queue import (
 from mmrelay.log_utils import get_logger
 
 logger = get_logger(name="MessageQueue")
+SENT_HISTORY_LIMIT = 20
+QUEUED_DESCRIPTION_LIMIT = 8
 
 
 @dataclass
@@ -93,6 +95,8 @@ class MessageQueue:
         self._last_queue_full_log_time: float | None = None
         self._stop_failed = False
         self._stop_logged = False
+        self._current_description: str | None = None
+        self._sent_history: deque[dict[str, Any]] = deque(maxlen=SENT_HISTORY_LIMIT)
 
     def _clear_failed_stop_state_if_recovered_locked(self) -> bool:
         """
@@ -591,23 +595,33 @@ class MessageQueue:
                 - dropped_messages (int): Number of messages dropped due to the queue being full.
                 - default_msgs_to_keep (int): Default retention count for persisted message mappings.
         """
-        return {
-            "running": self._running,
-            "queue_size": len(self._queue),
-            "message_delay": self._message_delay,
-            "stop_failed": self._stop_failed,
-            "processor_task_active": self._processor_task is not None
-            and not self._processor_task.done(),
-            "last_send_time": self._last_send_time,
-            "time_since_last_send": (
-                time.monotonic() - self._last_send_mono
-                if self._last_send_mono > 0
-                else None
-            ),
-            "in_flight": self._in_flight,
-            "dropped_messages": getattr(self, "_dropped_messages", 0),
-            "default_msgs_to_keep": DEFAULT_MSGS_TO_KEEP,
-        }
+        with self._lock:
+            queued_descriptions = [
+                message.description
+                for message in list(self._queue)[:QUEUED_DESCRIPTION_LIMIT]
+            ]
+            return {
+                "running": self._running,
+                "queue_size": len(self._queue),
+                "message_delay": self._message_delay,
+                "stop_failed": self._stop_failed,
+                "processor_task_active": self._processor_task is not None
+                and not self._processor_task.done(),
+                "last_send_time": self._last_send_time,
+                "time_since_last_send": (
+                    time.monotonic() - self._last_send_mono
+                    if self._last_send_mono > 0
+                    else None
+                ),
+                "in_flight": self._in_flight,
+                "current_description": self._current_description,
+                "queued_descriptions": queued_descriptions,
+                "queued_descriptions_truncated": len(self._queue)
+                > QUEUED_DESCRIPTION_LIMIT,
+                "dropped_messages": getattr(self, "_dropped_messages", 0),
+                "default_msgs_to_keep": DEFAULT_MSGS_TO_KEEP,
+                "sent_history": list(self._sent_history),
+            }
 
     async def drain(self, timeout: Optional[float] = None) -> bool:
         """
@@ -678,6 +692,7 @@ class MessageQueue:
                     try:
                         current_message = self._queue.popleft()
                         self._has_current = True
+                        self._current_description = current_message.description
                     except IndexError:
                         # No messages, wait a bit and continue
                         await asyncio.sleep(QUEUE_POLL_INTERVAL_SEC)
@@ -713,6 +728,7 @@ class MessageQueue:
                             self._requeue_message(current_message)
                             current_message = None
                             self._has_current = False
+                            self._current_description = None
                             await asyncio.sleep(CONNECTION_RETRY_SLEEP_SEC)
                             continue
                         # After successful wait, continue to send
@@ -738,6 +754,7 @@ class MessageQueue:
                     self._requeue_message(current_message)
                     current_message = None
                     self._has_current = False
+                    self._current_description = None
                     await asyncio.sleep(CONNECTION_RETRY_SLEEP_SEC)
                     continue
 
@@ -770,10 +787,12 @@ class MessageQueue:
                         logger.warning(
                             f"Message send returned None: {current_message.description}"
                         )
+                        self._record_sent_history(current_message, "no_result")
                     else:
                         logger.debug(
                             f"Successfully sent queued message: {current_message.description}"
                         )
+                        self._record_sent_history(current_message, "sent")
                         self._mark_delivery_sent(current_message)
 
                         # Handle message mapping if provided
@@ -825,17 +844,20 @@ class MessageQueue:
                         current_message = None
                         self._has_current = False
                         self._in_flight = False
+                        self._current_description = None
                         await asyncio.sleep(CONNECTION_RETRY_SLEEP_SEC)
                         continue
                     else:
                         logger.exception(
                             f"Error sending queued message '{current_message.description}'"
                         )
+                        self._record_sent_history(current_message, "error")
 
                 # Clear current message
                 current_message = None
                 self._in_flight = False
                 self._has_current = False
+                self._current_description = None
 
             except asyncio.CancelledError:
                 logger.debug("Message queue processor cancelled")
@@ -843,14 +865,39 @@ class MessageQueue:
                     logger.warning(
                         f"Message in flight was dropped during shutdown: {current_message.description}"
                     )
+                    self._record_sent_history(current_message, "cancelled")
                 self._in_flight = False
                 self._has_current = False
+                self._current_description = None
                 break
             except Exception:
                 logger.exception("Error in message queue processor")
                 await asyncio.sleep(
                     CONNECTION_RETRY_SLEEP_SEC
                 )  # Prevent tight error loop
+
+    def _record_sent_history(self, message: QueuedMessage, status: str) -> None:
+        """Remember a compact record of a completed send attempt."""
+        record = {
+            "timestamp": time.time(),
+            "status": status,
+            "description": message.description,
+        }
+        mapping = message.mapping_info
+        if isinstance(mapping, dict):
+            text = mapping.get("text")
+            if isinstance(text, str) and text:
+                record["text"] = text[:180]
+            room_id = mapping.get("room_id")
+            if isinstance(room_id, str) and room_id:
+                record["room_id"] = room_id
+        delivery = message.delivery_info
+        if isinstance(delivery, dict):
+            event_id = delivery.get("event_id")
+            if isinstance(event_id, str) and event_id:
+                record["event_id"] = event_id
+        with self._lock:
+            self._sent_history.appendleft(record)
 
     def _prepare_delivery_tracking(
         self,

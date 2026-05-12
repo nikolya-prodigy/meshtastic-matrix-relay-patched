@@ -180,6 +180,12 @@ class TestMessageQueue(unittest.TestCase):
             self.assertEqual(len(self.sent_messages), len(messages))
             for i, expected_msg in enumerate(messages):
                 self.assertEqual(self.sent_messages[i]["text"], expected_msg)
+            status = self.queue.get_status()
+            self.assertEqual(status["queue_size"], 0)
+            self.assertIsNone(status["current_description"])
+            self.assertEqual(len(status["sent_history"]), len(messages))
+            self.assertEqual(status["sent_history"][0]["description"], "Test message: Third")
+            self.assertEqual(status["sent_history"][0]["status"], "sent")
 
         # Run the async test on the dedicated loop so the patched executor is used
         self.loop.run_until_complete(async_test())

@@ -391,6 +391,8 @@ async def on_room_message(
             event.sender,
             room.room_id,
         )
+        if not is_reaction:
+            await facade.send_matrix_reaction(room.room_id, event.event_id, "❌")
         return
 
     if is_reaction and not interactions["reactions"]:

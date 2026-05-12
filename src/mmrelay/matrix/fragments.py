@@ -7,6 +7,7 @@ from typing import Any
 CONFIG_KEY_MESSAGE_FRAGMENTATION = "message_fragmentation"
 DEFAULT_FRAGMENT_MAX_PAYLOAD_BYTES = 180
 DEFAULT_FRAGMENT_PREFIX_TEMPLATE = "[{index}/{total}] "
+DEFAULT_FRAGMENT_LAST_SUFFIX_TEMPLATE = ""
 MESHTASTIC_TEXT_PAYLOAD_LIMIT_BYTES = 233
 
 
@@ -33,11 +34,18 @@ def get_message_fragmentation_config(config: dict[str, Any] | None) -> dict[str,
     )
     if not isinstance(prefix_template, str) or not prefix_template:
         prefix_template = DEFAULT_FRAGMENT_PREFIX_TEMPLATE
+    last_suffix_template = raw_config.get(
+        "last_suffix_template",
+        DEFAULT_FRAGMENT_LAST_SUFFIX_TEMPLATE,
+    )
+    if not isinstance(last_suffix_template, str):
+        last_suffix_template = DEFAULT_FRAGMENT_LAST_SUFFIX_TEMPLATE
 
     return {
         "enabled": bool(raw_config.get("enabled", False)),
         "max_payload_bytes": max_payload_bytes,
         "prefix_template": prefix_template,
+        "last_suffix_template": last_suffix_template,
     }
 
 
@@ -55,6 +63,7 @@ def split_text_for_meshtastic(
         return [text]
 
     prefix_template = str(fragmentation["prefix_template"])
+    last_suffix_template = str(fragmentation["last_suffix_template"])
     total_estimate = 1
     fragments: list[str] = [text]
     for _ in range(8):
@@ -62,10 +71,19 @@ def split_text_for_meshtastic(
             text,
             max_payload_bytes=max_payload_bytes,
             prefix_template=prefix_template,
+            last_suffix_template=last_suffix_template,
             total=total_estimate,
         )
         fragments = [
-            _format_prefix(prefix_template, index + 1, len(body_chunks)) + chunk
+            (
+                _format_prefix(prefix_template, index + 1, len(body_chunks))
+                + chunk
+                + (
+                    _format_template(last_suffix_template, index + 1, len(body_chunks))
+                    if index + 1 == len(body_chunks)
+                    else ""
+                )
+            )
             for index, chunk in enumerate(body_chunks)
         ]
         if len(body_chunks) == total_estimate:
@@ -79,6 +97,7 @@ def _split_body_chunks(
     *,
     max_payload_bytes: int,
     prefix_template: str,
+    last_suffix_template: str,
     total: int,
 ) -> list[str]:
     remaining = text.strip()
@@ -86,6 +105,14 @@ def _split_body_chunks(
     while remaining:
         index = len(chunks) + 1
         prefix = _format_prefix(prefix_template, index, total)
+        last_suffix = _format_template(last_suffix_template, index, total)
+        last_capacity = max_payload_bytes - _utf8_len(prefix) - _utf8_len(last_suffix)
+        if last_capacity <= 0:
+            raise ValueError("Fragment suffix is too large for configured payload size")
+        if _utf8_len(remaining) <= last_capacity:
+            chunks.append(remaining.strip())
+            break
+
         capacity = max_payload_bytes - _utf8_len(prefix)
         if capacity <= 0:
             raise ValueError("Fragment prefix is too large for configured payload size")
@@ -139,10 +166,19 @@ def _best_text_cut(text: str, end: int, capacity_bytes: int) -> int:
 
 
 def _format_prefix(template: str, index: int, total: int) -> str:
+    return _format_template(template, index, total) or DEFAULT_FRAGMENT_PREFIX_TEMPLATE.format(
+        index=index,
+        total=total,
+    )
+
+
+def _format_template(template: str, index: int, total: int) -> str:
+    if not template:
+        return ""
     try:
         return template.format(index=index, total=total)
     except (IndexError, KeyError, ValueError):
-        return DEFAULT_FRAGMENT_PREFIX_TEMPLATE.format(index=index, total=total)
+        return ""
 
 
 def _coerce_int(value: Any, default: int) -> int:

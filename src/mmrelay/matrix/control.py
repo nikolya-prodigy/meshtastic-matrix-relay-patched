@@ -38,6 +38,9 @@ dm <number|node-id|name> - Create or open a direct Matrix room for a node
 channels - List Meshtastic channels known to the bridge
 rooms - List Matrix rooms managed by this bridge
 status - Show bridge, node, room and queue status
+queue - Show outgoing Meshtastic queue status
+sent [limit] - Show recent outgoing send attempts
+writers - Show who can write to Meshtastic channel rooms
 refresh - Refresh managed rooms, profiles and bot avatar
 map - Render a map of nodes with positions
 weather - Current weather for the mesh area
@@ -200,6 +203,25 @@ def _relative_time(timestamp: float) -> str:
     if minutes >= 1:
         return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
     return "Just now"
+
+
+def _duration(seconds: Any) -> str:
+    try:
+        total_seconds = int(float(seconds))
+    except (TypeError, ValueError, OverflowError):
+        return "?"
+    if total_seconds < 0:
+        return "?"
+    minutes, secs = divmod(total_seconds, SECONDS_PER_MINUTE)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
 
 
 def _last_heard_timestamp(info: dict[str, Any]) -> float:
@@ -1534,14 +1556,162 @@ def _queue_summary() -> tuple[str, str]:
     return str(queue_size), str(running).lower()
 
 
+def _mesh_runtime_summary(interface: Any) -> dict[str, Any]:
+    nodes = getattr(interface, "nodes", None)
+    if not isinstance(nodes, dict):
+        return {
+            "nodes": 0,
+            "online": 0,
+            "direct": 0,
+            "relayed": 0,
+            "mqtt": 0,
+            "last_heard": None,
+        }
+    online = 0
+    direct = 0
+    relayed = 0
+    mqtt = 0
+    last_heard = -1.0
+    for info in nodes.values():
+        if not isinstance(info, dict):
+            continue
+        timestamp = _last_heard_timestamp(info)
+        if timestamp > last_heard:
+            last_heard = timestamp
+        if _is_online_node_info(info):
+            online += 1
+        hops = info.get("hopsAway")
+        if hops == 0:
+            direct += 1
+        elif isinstance(hops, int) and hops > 0:
+            relayed += 1
+        if info.get("viaMqtt") is True:
+            mqtt += 1
+    return {
+        "nodes": len(nodes),
+        "online": online,
+        "direct": direct,
+        "relayed": relayed,
+        "mqtt": mqtt,
+        "last_heard": last_heard if last_heard > 0 else None,
+    }
+
+
+def _queue_status() -> dict[str, Any]:
+    try:
+        return facade.get_message_queue().get_status()
+    except Exception:  # noqa: BLE001
+        facade.logger.exception("Failed to read message queue status")
+        return {}
+
+
+def _format_queue_status(status: dict[str, Any]) -> str:
+    if not status:
+        return "Outgoing queue status\n\nqueue: unavailable"
+
+    lines = [
+        "Outgoing queue status",
+        "",
+        f"running: {str(status.get('running')).lower()}",
+        f"processor: {str(status.get('processor_task_active')).lower()}",
+        f"queued: {status.get('queue_size', '?')}",
+        f"in flight: {str(status.get('in_flight')).lower()}",
+        f"delay: {status.get('message_delay', '?')}s",
+        f"dropped: {status.get('dropped_messages', '?')}",
+    ]
+    since_last = status.get("time_since_last_send")
+    lines.append(
+        f"last send: {_duration(since_last)} ago"
+        if since_last is not None
+        else "last send: never"
+    )
+
+    current = status.get("current_description")
+    if isinstance(current, str) and current:
+        lines.extend(["", "current:", f"1. {current}"])
+
+    queued = status.get("queued_descriptions")
+    if isinstance(queued, list) and queued:
+        lines.extend(["", "next queued:"])
+        for index, description in enumerate(queued, start=1):
+            lines.append(f"{index}. {description}")
+        if status.get("queued_descriptions_truncated"):
+            lines.append("...")
+    return "\n".join(lines)
+
+
+def _format_sent_history(status: dict[str, Any], limit: int) -> str:
+    history = status.get("sent_history") if isinstance(status, dict) else None
+    if not isinstance(history, list) or not history:
+        return "Recent outgoing send attempts\n\nNo send attempts recorded yet."
+
+    lines = ["Recent outgoing send attempts"]
+    for index, record in enumerate(history[:limit], start=1):
+        if not isinstance(record, dict):
+            continue
+        timestamp = record.get("timestamp")
+        try:
+            when = _relative_time(float(timestamp))
+        except (TypeError, ValueError, OverflowError, OSError):
+            when = "?"
+        lines.append(
+            f"\n{index}. {record.get('status', '?')} / {when}\n"
+            f"   {record.get('description', '?')}"
+        )
+        text = record.get("text")
+        if isinstance(text, str) and text:
+            lines.append(f"   text: {text}")
+    return "\n".join(lines)
+
+
+async def _handle_queue_command(room: Any) -> bool:
+    await send_control_message(room.room_id, _format_queue_status(_queue_status()))
+    return True
+
+
+async def _handle_sent_command(room: Any, args: str) -> bool:
+    try:
+        limit = int(args.strip()) if args.strip() else 10
+    except ValueError:
+        limit = 10
+    limit = max(1, min(limit, 20))
+    await send_control_message(room.room_id, _format_sent_history(_queue_status(), limit))
+    return True
+
+
+async def _handle_writers_command(room: Any) -> bool:
+    portals = _portal_config(facade.config)
+    access = portals.get("access") if isinstance(portals, dict) else None
+    writers = access.get("channel_writers") if isinstance(access, dict) else None
+    if not isinstance(writers, list):
+        await send_control_message(
+            room.room_id,
+            "Channel room writers\n\nAll Matrix users in channel rooms may write to Meshtastic.",
+        )
+        return True
+
+    allowed = [writer for writer in writers if isinstance(writer, str) and writer]
+    if not allowed:
+        await send_control_message(
+            room.room_id,
+            "Channel room writers\n\nNo writers configured. Channel rooms are read-only.",
+        )
+        return True
+
+    lines = ["Channel room writers", ""]
+    lines.extend(f"{index}. {writer}" for index, writer in enumerate(allowed, start=1))
+    await send_control_message(room.room_id, "\n".join(lines))
+    return True
+
+
 async def _handle_status_command(room: Any) -> bool:
     client = getattr(facade, "matrix_client", None)
     interface = _get_interface()
     matrix_rooms = _get_matrix_rooms()
     room_counts = _room_type_counts(matrix_rooms)
-    nodes = getattr(interface, "nodes", None)
-    node_count = len(nodes) if isinstance(nodes, dict) else 0
-    queue_size, queue_running = _queue_summary()
+    mesh_summary = _mesh_runtime_summary(interface)
+    queue_status = _queue_status()
+    last_heard = mesh_summary.get("last_heard")
 
     lines = [
         "Meshtastic bridge status",
@@ -1549,7 +1719,14 @@ async def _handle_status_command(room: Any) -> bool:
         f"matrix: {'connected' if client is not None else 'not connected'}",
         f"meshtastic: {'connected' if interface is not None else 'not connected'}",
         f"node: {_local_node_title(interface)}",
-        f"nodes: {node_count}",
+        f"nodes: {mesh_summary['nodes']} / Online {mesh_summary['online']}",
+        (
+            "links: "
+            f"direct {mesh_summary['direct']}, "
+            f"relayed {mesh_summary['relayed']}, "
+            f"mqtt {mesh_summary['mqtt']}"
+        ),
+        f"last mesh packet: {_relative_time(last_heard) if last_heard else '?'}",
         (
             "rooms: "
             f"{len(matrix_rooms)} total, "
@@ -1557,7 +1734,18 @@ async def _handle_status_command(room: Any) -> bool:
             f"{room_counts['dm']} dm, "
             f"{room_counts['control']} control"
         ),
-        f"queue: {queue_size}, running: {queue_running}",
+        (
+            "queue: "
+            f"{queue_status.get('queue_size', '?')} queued, "
+            f"{'in flight' if queue_status.get('in_flight') else 'idle'}, "
+            f"running {str(queue_status.get('running')).lower()}"
+        ),
+        (
+            "last send: "
+            f"{_duration(queue_status.get('time_since_last_send'))} ago"
+            if queue_status.get("time_since_last_send") is not None
+            else "last send: never"
+        ),
     ]
     await send_control_message(room.room_id, "\n".join(lines))
     return True
@@ -1708,6 +1896,18 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
         return handled
     if command.casefold() == "status":
         handled = await _handle_status_command(room)
+        await _send_control_reaction(room, event, "✅")
+        return handled
+    if command.casefold() == "queue":
+        handled = await _handle_queue_command(room)
+        await _send_control_reaction(room, event, "✅")
+        return handled
+    if command.casefold() == "sent":
+        handled = await _handle_sent_command(room, args)
+        await _send_control_reaction(room, event, "✅")
+        return handled
+    if command.casefold() == "writers":
+        handled = await _handle_writers_command(room)
         await _send_control_reaction(room, event, "✅")
         return handled
     if command.casefold() == "refresh":
