@@ -31,6 +31,10 @@ from nio.events.room_events import RoomMemberEvent
 
 import mmrelay.matrix_utils as facade
 from mmrelay.constants.formats import MATRIX_SUPPRESS_KEY
+from mmrelay.matrix.fragments import (
+    get_message_fragmentation_config,
+    split_text_for_meshtastic,
+)
 
 __all__ = [
     "on_decryption_failure",
@@ -548,6 +552,8 @@ async def on_room_message(
                 facade.config, longname, shortname, short_meshnet_name
             )
             full_message = f"{prefix}{text}"
+            if not get_message_fragmentation_config(facade.config)["enabled"]:
+                full_message = facade.truncate_message(full_message)
             if not text:
                 facade.logger.warning(
                     "Remote meshnet message from %s had empty text after formatting; skipping relay",
@@ -565,7 +571,8 @@ async def on_room_message(
             f"Processing matrix message from [{full_display_name}]: {text}"
         )
         full_message = f"{prefix}{text}"
-        full_message = facade.truncate_message(full_message)
+        if not get_message_fragmentation_config(facade.config)["enabled"]:
+            full_message = facade.truncate_message(full_message)
 
     portnum = event.source["content"].get("meshtastic_portnum")
     if isinstance(portnum, str):
@@ -676,47 +683,78 @@ async def on_room_message(
             facade.DEFAULT_BROADCAST_ENABLED,
             required=False,
         ):
-            mapping_info = None
-            delivery_info = facade.create_delivery_info(
-                room.room_id,
-                event.event_id,
-                facade.config,
-            )
-            if storage_enabled:
-                msgs_to_keep = facade._get_msgs_to_keep_config(facade.config)
+            try:
+                fragments = split_text_for_meshtastic(full_message, facade.config)
+            except ValueError as exc:
+                meshtastic_logger.error("Failed to fragment Meshtastic message: %s", exc)
+                return
 
-                mapping_info = facade._create_mapping_info(
-                    event.event_id,
+            msgs_to_keep = (
+                facade._get_msgs_to_keep_config(facade.config)
+                if storage_enabled
+                else None
+            )
+            total_fragments = len(fragments)
+            success = True
+            destination_kwargs = _meshtastic_destination_kwargs(room_config)
+
+            for index, fragment in enumerate(fragments, start=1):
+                delivery_info = facade.create_delivery_info(
                     room.room_id,
-                    text,
-                    local_meshnet_name,
-                    msgs_to_keep,
+                    event.event_id,
+                    facade.config,
                 )
-
-            send_kwargs = facade.apply_delivery_ack_kwargs(
-                _meshtastic_destination_kwargs(room_config),
-                delivery_info,
-            )
-            success = facade.queue_message(
-                meshtastic_interface.sendText,
-                text=full_message,
-                channelIndex=meshtastic_channel,
-                **send_kwargs,
-                description=f"Message from {full_display_name}",
-                mapping_info=mapping_info,
-                delivery_info=delivery_info,
-            )
+                mapping_info = (
+                    facade._create_mapping_info(
+                        event.event_id,
+                        room.room_id,
+                        fragment,
+                        local_meshnet_name,
+                        msgs_to_keep,
+                    )
+                    if storage_enabled
+                    else None
+                )
+                send_kwargs = facade.apply_delivery_ack_kwargs(
+                    destination_kwargs.copy(),
+                    delivery_info,
+                )
+                description = f"Message from {full_display_name}"
+                if total_fragments > 1:
+                    description += f" (fragment {index}/{total_fragments})"
+                success = facade.queue_message(
+                    meshtastic_interface.sendText,
+                    text=fragment,
+                    channelIndex=meshtastic_channel,
+                    **send_kwargs,
+                    description=description,
+                    mapping_info=mapping_info,
+                    delivery_info=delivery_info,
+                )
+                if not success:
+                    break
 
             if success:
                 queue_size = facade.get_message_queue().get_queue_size()
+                fragment_note = (
+                    f" as {total_fragments} fragments"
+                    if total_fragments > 1
+                    else ""
+                )
 
                 if queue_size > 1:
                     meshtastic_logger.info(
-                        f"Relaying message from {full_display_name} to radio broadcast (queued: {queue_size} messages)"
+                        "Relaying message from %s to radio broadcast%s "
+                        "(queued: %s messages)",
+                        full_display_name,
+                        fragment_note,
+                        queue_size,
                     )
                 else:
                     meshtastic_logger.info(
-                        f"Relaying message from {full_display_name} to radio broadcast"
+                        "Relaying message from %s to radio broadcast%s",
+                        full_display_name,
+                        fragment_note,
                     )
             else:
                 meshtastic_logger.error("Failed to relay message to Meshtastic")

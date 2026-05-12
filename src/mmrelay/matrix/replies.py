@@ -11,6 +11,10 @@ from nio import (
 )
 
 import mmrelay.matrix_utils as facade
+from mmrelay.matrix.fragments import (
+    get_message_fragmentation_config,
+    split_text_for_meshtastic,
+)
 
 __all__ = [
     "truncate_message",
@@ -133,7 +137,7 @@ def format_reply_message(
     user_id: str | None = None,
 ) -> str:
     """
-    Format a Meshtastic-style reply, applying an appropriate sender prefix and truncating the result to the configured maximum length.
+    Format a Meshtastic-style reply, applying an appropriate sender prefix.
 
     Parameters:
         config (dict[str, Any]): Runtime configuration used to build prefix formats.
@@ -146,7 +150,7 @@ def format_reply_message(
         mesh_text_override (str | None): Optional raw Meshtastic payload preferred over `text` when generating the reply body.
 
     Returns:
-        str: The formatted reply message with quoted lines removed, the appropriate prefix applied (remote or local), and truncated to the configured maximum length.
+        str: The formatted reply message with quoted lines removed and the appropriate prefix applied.
     """
     base_text = mesh_text_override if mesh_text_override else text
 
@@ -191,10 +195,14 @@ def format_reply_message(
         )
         reply_body = f" {clean_text}" if clean_text else ""
         reply_message = f"{mesh_prefix}{reply_body}"
+        if get_message_fragmentation_config(config)["enabled"]:
+            return reply_message.strip()
         return truncate_message(reply_message.strip())
 
     prefix = facade.get_meshtastic_prefix(config, full_display_name, user_id)
     reply_message = f"{prefix}{clean_text}" if clean_text else prefix.rstrip()
+    if get_message_fragmentation_config(config)["enabled"]:
+        return reply_message
     return truncate_message(reply_message)
 
 
@@ -254,43 +262,73 @@ async def send_reply_to_meshtastic(
         return False
 
     try:
-        mapping_info = None
-        delivery_info = facade.create_delivery_info(
-            room.room_id,
-            event.event_id,
-            effective_config,
+        fragments = split_text_for_meshtastic(reply_message, effective_config)
+        msgs_to_keep = (
+            facade._get_msgs_to_keep_config(effective_config)
+            if storage_enabled
+            else None
         )
-        if storage_enabled:
-            msgs_to_keep = facade._get_msgs_to_keep_config(effective_config)
-
-            mapping_info = facade._create_mapping_info(
-                event.event_id, room.room_id, text, local_meshnet_name, msgs_to_keep
-            )
+        total_fragments = len(fragments)
 
         if reply_id is not None:
-            send_kwargs = facade.apply_delivery_ack_kwargs({}, delivery_info)
-            success = facade.queue_message(
-                facade.send_text_reply,
-                meshtastic_interface,
-                text=reply_message,
-                reply_id=reply_id,
-                channelIndex=meshtastic_channel,
-                **send_kwargs,
-                description=f"Reply from {full_display_name} to message {reply_id}",
-                mapping_info=mapping_info,
-                delivery_info=delivery_info,
-            )
+            success = True
+            for index, fragment in enumerate(fragments, start=1):
+                delivery_info = facade.create_delivery_info(
+                    room.room_id,
+                    event.event_id,
+                    effective_config,
+                )
+                mapping_info = (
+                    facade._create_mapping_info(
+                        event.event_id,
+                        room.room_id,
+                        fragment,
+                        local_meshnet_name,
+                        msgs_to_keep,
+                    )
+                    if storage_enabled
+                    else None
+                )
+                send_kwargs = facade.apply_delivery_ack_kwargs({}, delivery_info)
+                description = f"Reply from {full_display_name} to message {reply_id}"
+                if total_fragments > 1:
+                    description += f" (fragment {index}/{total_fragments})"
+                success = facade.queue_message(
+                    facade.send_text_reply,
+                    meshtastic_interface,
+                    text=fragment,
+                    reply_id=reply_id,
+                    channelIndex=meshtastic_channel,
+                    **send_kwargs,
+                    description=description,
+                    mapping_info=mapping_info,
+                    delivery_info=delivery_info,
+                )
+                if not success:
+                    break
 
             if success:
                 queue_size = facade.get_message_queue().get_queue_size()
+                fragment_note = (
+                    f" as {total_fragments} fragments"
+                    if total_fragments > 1
+                    else ""
+                )
 
                 if queue_size > 1:
                     meshtastic_logger.info(
-                        f"Relaying Matrix reply from {full_display_name} to radio broadcast as structured reply (queued: {queue_size} messages)"
+                        "Relaying Matrix reply from %s to radio broadcast "
+                        "as structured reply%s (queued: %s messages)",
+                        full_display_name,
+                        fragment_note,
+                        queue_size,
                     )
                 else:
                     meshtastic_logger.info(
-                        f"Relaying Matrix reply from {full_display_name} to radio broadcast as structured reply"
+                        "Relaying Matrix reply from %s to radio broadcast "
+                        "as structured reply%s",
+                        full_display_name,
+                        fragment_note,
                     )
                 return True
             else:
@@ -299,27 +337,61 @@ async def send_reply_to_meshtastic(
                 )
                 return False
         else:
-            send_kwargs = facade.apply_delivery_ack_kwargs({}, delivery_info)
-            success = facade.queue_message(
-                meshtastic_interface.sendText,
-                text=reply_message,
-                channelIndex=meshtastic_channel,
-                **send_kwargs,
-                description=f"Reply from {full_display_name} (fallback to regular message)",
-                mapping_info=mapping_info,
-                delivery_info=delivery_info,
-            )
+            success = True
+            for index, fragment in enumerate(fragments, start=1):
+                delivery_info = facade.create_delivery_info(
+                    room.room_id,
+                    event.event_id,
+                    effective_config,
+                )
+                mapping_info = (
+                    facade._create_mapping_info(
+                        event.event_id,
+                        room.room_id,
+                        fragment,
+                        local_meshnet_name,
+                        msgs_to_keep,
+                    )
+                    if storage_enabled
+                    else None
+                )
+                send_kwargs = facade.apply_delivery_ack_kwargs({}, delivery_info)
+                description = f"Reply from {full_display_name}"
+                if total_fragments > 1:
+                    description += f" (fragment {index}/{total_fragments})"
+                success = facade.queue_message(
+                    meshtastic_interface.sendText,
+                    text=fragment,
+                    channelIndex=meshtastic_channel,
+                    **send_kwargs,
+                    description=description,
+                    mapping_info=mapping_info,
+                    delivery_info=delivery_info,
+                )
+                if not success:
+                    break
 
             if success:
                 queue_size = facade.get_message_queue().get_queue_size()
+                fragment_note = (
+                    f" as {total_fragments} fragments"
+                    if total_fragments > 1
+                    else ""
+                )
 
                 if queue_size > 1:
                     meshtastic_logger.info(
-                        f"Relaying Matrix reply from {full_display_name} to radio broadcast (queued: {queue_size} messages)"
+                        "Relaying Matrix reply from %s to radio broadcast%s "
+                        "(queued: %s messages)",
+                        full_display_name,
+                        fragment_note,
+                        queue_size,
                     )
                 else:
                     meshtastic_logger.info(
-                        f"Relaying Matrix reply from {full_display_name} to radio broadcast"
+                        "Relaying Matrix reply from %s to radio broadcast%s",
+                        full_display_name,
+                        fragment_note,
                     )
                 return True
             else:
