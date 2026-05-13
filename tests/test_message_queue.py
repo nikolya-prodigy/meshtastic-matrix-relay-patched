@@ -241,6 +241,44 @@ class TestMessageQueue(unittest.TestCase):
 
         self.loop.run_until_complete(async_test())
 
+    def test_per_message_min_delay_overrides_default_delay(self):
+        async def async_test():
+            clock = {"now": 0.0}
+            sent_timestamps: list[float] = []
+            real_sleep = asyncio.sleep
+
+            def _monotonic() -> float:
+                return clock["now"]
+
+            def _time() -> float:
+                return clock["now"]
+
+            async def _fake_sleep(delay: float) -> None:
+                clock["now"] += delay
+                await real_sleep(0)
+
+            def _send(text: str) -> dict[str, int | str]:
+                sent_timestamps.append(clock["now"])
+                return {"id": len(sent_timestamps), "text": text}
+
+            with (
+                patch("mmrelay.message_queue.MINIMUM_MESSAGE_DELAY", 0.0),
+                patch("mmrelay.message_queue.time.monotonic", side_effect=_monotonic),
+                patch("mmrelay.message_queue.time.time", side_effect=_time),
+                patch("mmrelay.message_queue.asyncio.sleep", side_effect=_fake_sleep),
+            ):
+                self.queue.start(message_delay=0.05)
+                self.queue.ensure_processor_started()
+
+                self.queue.enqueue(_send, text="first")
+                self.queue.enqueue(_send, text="second", min_delay_secs=0.5)
+
+                self.assertTrue(await self.queue.drain(timeout=1.0))
+                self.assertEqual(len(sent_timestamps), 2)
+                self.assertGreaterEqual(sent_timestamps[1] - sent_timestamps[0], 0.5)
+
+        self.loop.run_until_complete(async_test())
+
     def test_stop_waits_for_task_on_running_loop(self):
         """stop should wait on tasks running in a different event loop."""
         queue = MessageQueue()

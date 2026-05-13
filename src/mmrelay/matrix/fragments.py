@@ -8,6 +8,7 @@ CONFIG_KEY_MESSAGE_FRAGMENTATION = "message_fragmentation"
 DEFAULT_FRAGMENT_MAX_PAYLOAD_BYTES = 180
 DEFAULT_FRAGMENT_PREFIX_TEMPLATE = "[{index}/{total}] "
 DEFAULT_FRAGMENT_LAST_SUFFIX_TEMPLATE = ""
+DEFAULT_FRAGMENT_DELAY_SECS = 15.0
 MESHTASTIC_TEXT_PAYLOAD_LIMIT_BYTES = 233
 
 
@@ -40,12 +41,18 @@ def get_message_fragmentation_config(config: dict[str, Any] | None) -> dict[str,
     )
     if not isinstance(last_suffix_template, str):
         last_suffix_template = DEFAULT_FRAGMENT_LAST_SUFFIX_TEMPLATE
+    fragment_delay_secs = _coerce_float(
+        raw_config.get("fragment_delay_secs"),
+        DEFAULT_FRAGMENT_DELAY_SECS,
+    )
+    fragment_delay_secs = max(0.0, fragment_delay_secs)
 
     return {
         "enabled": bool(raw_config.get("enabled", False)),
         "max_payload_bytes": max_payload_bytes,
         "prefix_template": prefix_template,
         "last_suffix_template": last_suffix_template,
+        "fragment_delay_secs": fragment_delay_secs,
     }
 
 
@@ -184,6 +191,13 @@ def _format_template(template: str, index: int, total: int) -> str:
 def _coerce_int(value: Any, default: int) -> int:
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return default
 

@@ -51,6 +51,12 @@ def test_payload_size_is_clamped_to_meshtastic_limit():
     assert normalized["max_payload_bytes"] == MESHTASTIC_TEXT_PAYLOAD_LIMIT_BYTES
 
 
+def test_fragment_delay_is_normalized():
+    normalized = get_message_fragmentation_config(_config(fragment_delay_secs="12.5"))
+
+    assert normalized["fragment_delay_secs"] == 12.5
+
+
 def test_invalid_prefix_template_falls_back_to_default():
     text = "0123456789 " * 20
 

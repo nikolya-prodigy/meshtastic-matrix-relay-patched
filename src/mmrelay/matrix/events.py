@@ -690,6 +690,7 @@ async def on_room_message(
             except ValueError as exc:
                 meshtastic_logger.error("Failed to fragment Meshtastic message: %s", exc)
                 return
+            fragment_config = get_message_fragmentation_config(facade.config)
 
             msgs_to_keep = (
                 facade._get_msgs_to_keep_config(facade.config)
@@ -697,6 +698,11 @@ async def on_room_message(
                 else None
             )
             total_fragments = len(fragments)
+            fragment_delay_secs = (
+                float(fragment_config.get("fragment_delay_secs", 0.0))
+                if total_fragments > 1
+                else None
+            )
             success = True
             destination_kwargs = _meshtastic_destination_kwargs(room_config)
 
@@ -732,6 +738,7 @@ async def on_room_message(
                     description=description,
                     mapping_info=mapping_info,
                     delivery_info=delivery_info,
+                    min_delay_secs=fragment_delay_secs,
                 )
                 if not success:
                     break

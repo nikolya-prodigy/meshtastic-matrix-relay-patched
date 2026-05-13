@@ -52,6 +52,8 @@ class QueuedMessage:
     mapping_info: Optional[dict[str, Any]] = None
     # Optional Matrix event information for delivery status reactions
     delivery_info: Optional[dict[str, Any]] = None
+    # Per-message minimum spacing from the previous successful send.
+    min_delay_secs: Optional[float] = None
 
 
 class MessageQueue:
@@ -396,6 +398,7 @@ class MessageQueue:
         description: str = "",
         mapping_info: Optional[dict[str, Any]] = None,
         delivery_info: Optional[dict[str, Any]] = None,
+        min_delay_secs: Optional[float] = None,
         wait: bool = False,
         timeout: Optional[float] = None,
         **kwargs: Any,
@@ -440,6 +443,7 @@ class MessageQueue:
                 description=description,
                 mapping_info=mapping_info,
                 delivery_info=delivery_info,
+                min_delay_secs=min_delay_secs,
             )
 
             # Try to enqueue the message
@@ -712,8 +716,14 @@ class MessageQueue:
                 # Check if we need to wait for message delay (only if we've sent before)
                 if self._last_send_mono > 0:
                     time_since_last = time.monotonic() - self._last_send_mono
-                    if time_since_last < self._message_delay:
-                        wait_time = self._message_delay - time_since_last
+                    effective_delay = self._message_delay
+                    if current_message.min_delay_secs is not None:
+                        effective_delay = max(
+                            effective_delay,
+                            current_message.min_delay_secs,
+                        )
+                    if time_since_last < effective_delay:
+                        wait_time = effective_delay - time_since_last
                         logger.debug(
                             f"Rate limiting: waiting {wait_time:.1f}s before sending"
                         )
@@ -1150,6 +1160,7 @@ def queue_message(
     description: str = "",
     mapping_info: Optional[dict[str, Any]] = None,
     delivery_info: Optional[dict[str, Any]] = None,
+    min_delay_secs: Optional[float] = None,
     **kwargs: Any,
 ) -> bool:
     """
@@ -1169,6 +1180,7 @@ def queue_message(
         description=description,
         mapping_info=mapping_info,
         delivery_info=delivery_info,
+        min_delay_secs=min_delay_secs,
         **kwargs,
     )
 
