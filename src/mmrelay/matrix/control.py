@@ -9,6 +9,7 @@ import html
 import logging
 import re
 import threading
+import time
 from typing import Any
 
 import mmrelay.matrix_utils as facade
@@ -56,6 +57,7 @@ Channel rooms are for Meshtastic traffic. Use this chat for bot commands.
 
 DEFAULT_NODES_LIMIT = 30
 TRACE_ROUTE_BASE_TIMEOUT_SECONDS = 4.0
+TRACE_ROUTE_RETURN_PATH_SETTLE_SECONDS = 3.0
 TELEMETRY_TIMEOUT_SECONDS = 30.0
 _NODE_INDEX_CACHE: dict[tuple[str, str], list["NodeEntry"]] = {}
 _CONTROL_BACKGROUND_REQUESTS: set[tuple[str, ...]] = set()
@@ -736,11 +738,11 @@ def _run_trace_route_request(
     response_packet: dict[str, Any] | None = None
     response_error: str | None = None
     sent_request_id: int | None = None
-    destination_num = _parse_node_num(destination_id)
     response_event = threading.Event()
+    first_response_at: float | None = None
 
     def on_packet(packet: dict[str, Any], interface: Any | None = None) -> None:
-        nonlocal response_packet, response_error
+        nonlocal response_packet, response_error, first_response_at
         if not isinstance(packet, dict):
             return
         if interface is not None and id(interface) != id(trace_interface):
@@ -759,15 +761,17 @@ def _run_trace_route_request(
                 response_error = f"routing error: {error_reason}"
                 response_event.set()
                 return
-        if not _is_trace_response_packet(
-            packet,
-            portnums_pb2,
-            destination_num=destination_num,
-        ):
+        if not _is_trace_response_packet(packet, portnums_pb2):
             return
-        response_packet = packet
-        _mark_trace_wait_finished(trace_interface, WAIT_ATTR_TRACEROUTE, request_id)
+        if (
+            response_packet is None
+            or _trace_packet_rank(packet) > _trace_packet_rank(response_packet)
+        ):
+            response_packet = packet
+        if first_response_at is None:
+            first_response_at = time.monotonic()
         if _trace_packet_has_return_path(packet):
+            _mark_trace_wait_finished(trace_interface, WAIT_ATTR_TRACEROUTE, request_id)
             response_event.set()
 
     trace_interface = interface
@@ -787,7 +791,21 @@ def _run_trace_route_request(
         if sent_request_id is None:
             return [], "failed to get traceroute request id"
         wait_factor = _trace_wait_factor(interface, hop_limit)
-        response_event.wait(TRACE_ROUTE_BASE_TIMEOUT_SECONDS * wait_factor)
+        deadline = time.monotonic() + (TRACE_ROUTE_BASE_TIMEOUT_SECONDS * wait_factor)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            response_event.wait(min(remaining, TRACE_ROUTE_RETURN_PATH_SETTLE_SECONDS))
+            if response_event.is_set():
+                break
+            if (
+                response_packet is not None
+                and first_response_at is not None
+                and time.monotonic() - first_response_at
+                >= TRACE_ROUTE_RETURN_PATH_SETTLE_SECONDS
+            ):
+                break
     except Exception as exc:  # noqa: BLE001 - surface API failures to Matrix
         if response_packet is None:
             return [], response_error or str(exc) or exc.__class__.__name__
@@ -801,7 +819,29 @@ def _run_trace_route_request(
 
     if response_packet is None:
         return [], response_error
+    _mark_trace_wait_finished(trace_interface, WAIT_ATTR_TRACEROUTE, sent_request_id)
     return _format_trace_route_packet(interface, response_packet), response_error
+
+
+def _trace_packet_rank(packet: dict[str, Any]) -> tuple[int, int, int]:
+    try:
+        from meshtastic.protobuf import mesh_pb2
+        from google.protobuf.message import DecodeError
+    except Exception:  # noqa: BLE001 - best-effort response ranking
+        return (0, 0, 0)
+
+    decoded = packet.get("decoded", {})
+    payload = decoded.get("payload") if isinstance(decoded, dict) else None
+    route_discovery = mesh_pb2.RouteDiscovery()
+    try:
+        route_discovery.ParseFromString(payload)
+    except (DecodeError, TypeError):
+        return (0, 0, 0)
+    return (
+        1 if route_discovery.route_back else 0,
+        len(route_discovery.route_back),
+        len(route_discovery.route),
+    )
 
 
 def _trace_packet_has_return_path(packet: dict[str, Any]) -> bool:
@@ -824,7 +864,6 @@ def _trace_packet_has_return_path(packet: dict[str, Any]) -> bool:
 def _is_trace_response_packet(
     packet: dict[str, Any],
     portnums_pb2: Any,
-    destination_num: int | None,
 ) -> bool:
     decoded = packet.get("decoded", {})
     if not isinstance(decoded, dict):
@@ -835,10 +874,6 @@ def _is_trace_response_packet(
         return False
     if decoded.get("wantResponse") is True or decoded.get("want_response") is True:
         return False
-    if destination_num is not None:
-        source_num = _trace_endpoint(decoded, packet, decoded_key="source", packet_key="from")
-        if source_num not in (0, destination_num):
-            return False
     payload = decoded.get("payload")
     return bool(payload)
 

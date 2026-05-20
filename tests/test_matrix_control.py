@@ -411,6 +411,65 @@ def test_trace_route_packet_reports_missing_return_route() -> None:
     ]
 
 
+def test_trace_response_accepts_relay_source() -> None:
+    class PortNums:
+        class PortNum:
+            TRACEROUTE_APP = 1
+
+            @staticmethod
+            def Name(_value):
+                return "TRACEROUTE_APP"
+
+    packet = {
+        "from": 0xACA9DF2C,
+        "to": 0x69852B48,
+        "decoded": {
+            "portnum": "TRACEROUTE_APP",
+            "payload": b"route",
+        },
+    }
+
+    assert control._is_trace_response_packet(packet, PortNums) is True
+
+
+def test_trace_packet_rank_prefers_return_route(monkeypatch) -> None:
+    from meshtastic.protobuf import mesh_pb2
+
+    class RouteDiscovery:
+        def __init__(self) -> None:
+            self.route = []
+            self.route_back = []
+
+        def ParseFromString(self, payload):
+            self.route = payload.get("route", [])
+            self.route_back = payload.get("route_back", [])
+
+    monkeypatch.setattr(mesh_pb2, "RouteDiscovery", RouteDiscovery)
+    base_packet = {
+        "decoded": {
+            "portnum": "TRACEROUTE_APP",
+        },
+    }
+    one_way_packet = {
+        **base_packet,
+        "decoded": {
+            **base_packet["decoded"],
+            "payload": {"route": [0x00003040], "route_back": []},
+        },
+    }
+    with_return_packet = {
+        **base_packet,
+        "decoded": {
+            **base_packet["decoded"],
+            "payload": {"route": [0x00003040], "route_back": [0xACA9DF2C]},
+        },
+    }
+
+    assert control._trace_packet_rank(with_return_packet) > control._trace_packet_rank(
+        one_way_packet
+    )
+
+
 @pytest.mark.asyncio
 async def test_telemetry_command_requests_environment_metrics(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
