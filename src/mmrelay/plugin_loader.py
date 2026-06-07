@@ -786,9 +786,11 @@ def _reset_caches_for_tests() -> None:
     """
     Reset global plugin loader caches to their initial state for testing.
 
-    Sets the module globals `sorted_active_plugins` to an empty list and `plugins_loaded` to False to ensure test isolation.
+    Stops the test scheduler thread and resets module globals to ensure test
+    isolation.
     """
     global sorted_active_plugins, plugins_loaded, _community_dep_install_warning_logged
+    stop_global_scheduler()
     sorted_active_plugins = []
     plugins_loaded = False
     _community_dep_install_warning_logged = False

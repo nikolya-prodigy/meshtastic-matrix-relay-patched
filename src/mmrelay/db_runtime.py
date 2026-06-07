@@ -445,30 +445,35 @@ class DatabaseManager:
 
     async def _await_submitted_future(self, worker_future: Future[Any]) -> Any:
         """
-        Await a submitted executor future without polling.
+        Await a submitted executor future without cancelling it.
 
         Cancellation semantics:
         - No internal timeout is applied here; callers own timeout policy.
         - Caller cancellation should propagate immediately.
+        - The submitted worker future is shielded so `run_async()` can decide
+          whether to cancel or observe it based on read/write intent.
         - `run_async()` decides post-cancel behavior (cancel read futures, observe
           write-future errors).
         """
-        if worker_future.done():
-            return self._resolve_submitted_future_result(worker_future)
+        if isinstance(worker_future, Future) or asyncio.isfuture(worker_future):
+            async_future = asyncio.wrap_future(worker_future)
+            while True:
+                if worker_future.done():
+                    return self._resolve_submitted_future_result(worker_future)
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.shield(async_future),
+                        timeout=0.1,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                except ConcurrentCancelledError as exc:
+                    raise asyncio.CancelledError() from exc
 
-        loop = asyncio.get_running_loop()
-        done_event = asyncio.Event()
-
-        def _signal_done(_resolved_future: Future[Any]) -> None:
-            try:
-                loop.call_soon_threadsafe(done_event.set)
-            except RuntimeError:
-                # Event loop is shutting down; caller task cancellation will handle unwind.
-                return
-
-        worker_future.add_done_callback(_signal_done)
-        await done_event.wait()
-        return self._resolve_submitted_future_result(worker_future)
+        while True:
+            if worker_future.done():
+                return self._resolve_submitted_future_result(worker_future)
+            await asyncio.sleep(0.1)
 
     @staticmethod
     def _resolve_submitted_future_result(worker_future: Future[Any]) -> Any:

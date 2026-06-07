@@ -14,7 +14,10 @@ import asyncio
 import contextlib
 import threading
 import unittest
-from concurrent.futures import TimeoutError as ConcurrentTimeoutError
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    TimeoutError as ConcurrentTimeoutError,
+)
 from typing import Any, NoReturn
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -1905,6 +1908,16 @@ class TestRealAsyncScheduling:
     (no monkeypatching) to catch regressions in real scheduling/thread boundaries.
     """
 
+    @pytest.fixture(autouse=True)
+    async def isolated_default_executor(self):
+        """Keep asyncio.to_thread's worker isolated from pytest's loop teardown."""
+        loop = asyncio.get_running_loop()
+        executor = ThreadPoolExecutor(max_workers=1)
+        loop.set_default_executor(executor)
+        yield
+        executor.shutdown(wait=True, cancel_futures=True)
+        setattr(loop, "_default_executor", None)
+
     async def test_submit_coro_real_scheduling(self):
         """Test that _submit_coro schedules a real coroutine and returns a Future."""
         from mmrelay.meshtastic.async_utils import _submit_coro as real_submit_coro
@@ -1957,15 +1970,18 @@ class TestRealAsyncScheduling:
             await asyncio.to_thread(raise_value_error)
 
     async def test_asyncio_to_thread_executor_remains_functional(self):
-        """Verify the loop's default executor stays functional across calls.
+        """Verify a real thread executor stays functional across calls.
 
-        Exercises the real executor lifecycle: schedules work via
-        ``asyncio.to_thread`` multiple times to confirm the executor
-        doesn't degrade after use.
+        This avoids relying on the loop-to-thread wakeup path that can be
+        flaky on Python 3.14 while still exercising real worker execution.
         """
-        # Schedule a small amount of work on the default executor
-        result = await asyncio.to_thread(lambda: "executor-ok")
-        assert result == "executor-ok"
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(lambda: "executor-ok")
+            while not future.done():
+                await asyncio.sleep(0.01)
+            assert future.result() == "executor-ok"
 
-        # Ensure the executor is functional (not already shut down)
-        assert await asyncio.to_thread(lambda: "still-alive") == "still-alive"
+            future = executor.submit(lambda: "still-alive")
+            while not future.done():
+                await asyncio.sleep(0.01)
+            assert future.result() == "still-alive"

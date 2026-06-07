@@ -163,7 +163,13 @@ class TestHealthPlugin(unittest.TestCase):
         mock_connect.return_value = mock_meshtastic_client
 
         result = self.plugin.generate_response()
-        self.assertEqual(result, "Nodes: 3 / Online 0\nNo nodes with health metrics found.")
+        self.assertEqual(
+            result,
+            "Nodes: 3 / Online 0\n"
+            "Links: direct 0, relayed 0, mqtt 0\n"
+            "Last Packet: ?\n"
+            "No nodes with health metrics found.",
+        )
 
     @patch("mmrelay.meshtastic_utils.connect_meshtastic")
     def test_generate_response_with_minimal_data(self, mock_connect):

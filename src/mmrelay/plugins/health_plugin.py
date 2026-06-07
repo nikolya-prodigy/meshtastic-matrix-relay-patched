@@ -87,7 +87,7 @@ class Plugin(BasePlugin):
             Special return values:
                 - "Unable to connect to Meshtastic device." if a Meshtastic client cannot be obtained.
                 - "No nodes discovered yet." if the client has no discovered nodes.
-                - "Nodes: <count>\nNo nodes with health metrics found." if nodes exist but none report any tracked metrics.
+                - "Nodes: <count> / Online <count>\nLinks: ...\nLast Packet: ...\nNo nodes with health metrics found." if nodes exist but none report any tracked metrics.
         """
         from mmrelay.meshtastic_utils import connect_meshtastic
 

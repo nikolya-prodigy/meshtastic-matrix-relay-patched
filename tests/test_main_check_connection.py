@@ -146,6 +146,10 @@ def test_returns_early_when_task_is_none():
         patch("mmrelay.main.get_message_queue") as mock_get_queue,
         patch("mmrelay.main.shutdown_plugins"),
         patch("mmrelay.main.stop_message_queue"),
+        patch(
+            "mmrelay.main.asyncio.get_running_loop",
+            side_effect=make_patched_get_running_loop(),
+        ),
         patch("mmrelay.main.asyncio.Event", return_value=_ImmediateEvent()),
         patch(
             "mmrelay.main.meshtastic_utils.check_connection",
@@ -208,6 +212,10 @@ def test_timeout_during_shutdown_cancels_task():
         patch("mmrelay.main.get_message_queue") as mock_get_queue,
         patch("mmrelay.main.shutdown_plugins"),
         patch("mmrelay.main.stop_message_queue"),
+        patch(
+            "mmrelay.main.asyncio.get_running_loop",
+            side_effect=make_patched_get_running_loop(),
+        ),
         patch("mmrelay.main.asyncio.Event", return_value=_ImmediateEvent()),
         patch(
             "mmrelay.main.meshtastic_utils.check_connection",
@@ -215,6 +223,7 @@ def test_timeout_during_shutdown_cancels_task():
         ),
         patch("mmrelay.main.asyncio.wait_for") as mock_wait_for,
         patch("mmrelay.main.asyncio.create_task", side_effect=_capture_create_task),
+        patch("mmrelay.main.asyncio.to_thread", side_effect=inline_to_thread),
     ):
         mock_connect_matrix.return_value = mock_matrix_client
         mock_queue = MagicMock()
@@ -261,6 +270,10 @@ def test_check_connection_exception_is_raised_after_cleanup():
         patch("mmrelay.main.get_message_queue") as mock_get_queue,
         patch("mmrelay.main.shutdown_plugins") as mock_shutdown_plugins,
         patch("mmrelay.main.stop_message_queue") as mock_stop_message_queue,
+        patch(
+            "mmrelay.main.asyncio.get_running_loop",
+            side_effect=make_patched_get_running_loop(),
+        ),
         patch(
             "mmrelay.main.meshtastic_utils.check_connection",
             new=_check_connection_raises,
@@ -312,6 +325,10 @@ def test_check_connection_unexpected_return_is_raised_after_cleanup():
         patch("mmrelay.main.get_message_queue") as mock_get_queue,
         patch("mmrelay.main.shutdown_plugins") as mock_shutdown_plugins,
         patch("mmrelay.main.stop_message_queue") as mock_stop_message_queue,
+        patch(
+            "mmrelay.main.asyncio.get_running_loop",
+            side_effect=make_patched_get_running_loop(),
+        ),
         patch(
             "mmrelay.main._DEFAULT_CHECK_CONNECTION_CALLABLE",
             new=_check_connection_returns,
@@ -390,6 +407,10 @@ def test_exception_during_shutdown_wait_logs_error():
         patch("mmrelay.main.get_message_queue") as mock_get_queue,
         patch("mmrelay.main.shutdown_plugins"),
         patch("mmrelay.main.stop_message_queue"),
+        patch(
+            "mmrelay.main.asyncio.get_running_loop",
+            side_effect=make_patched_get_running_loop(),
+        ),
         patch("mmrelay.main.asyncio.Event", return_value=_ImmediateEvent()),
         patch(
             "mmrelay.main.meshtastic_utils.check_connection",
@@ -397,6 +418,7 @@ def test_exception_during_shutdown_wait_logs_error():
         ),
         patch("mmrelay.main.asyncio.wait_for") as mock_wait_for,
         patch("mmrelay.main.logger") as mock_logger,
+        patch("mmrelay.main.asyncio.to_thread", side_effect=inline_to_thread),
     ):
         mock_connect_matrix.return_value = mock_matrix_client
         mock_queue = MagicMock()
@@ -490,6 +512,10 @@ def test_cancelled_error_cancels_task_and_returns():
         patch("mmrelay.main.get_message_queue") as mock_get_queue,
         patch("mmrelay.main.shutdown_plugins"),
         patch("mmrelay.main.stop_message_queue"),
+        patch(
+            "mmrelay.main.asyncio.get_running_loop",
+            side_effect=make_patched_get_running_loop(),
+        ),
         patch("mmrelay.main.asyncio.Event", return_value=_ImmediateEvent()),
         patch(
             "mmrelay.main.meshtastic_utils.check_connection",
@@ -497,6 +523,7 @@ def test_cancelled_error_cancels_task_and_returns():
         ),
         patch("mmrelay.main.asyncio.wait_for", new=mock_wait_for),
         patch("mmrelay.main.asyncio.create_task", side_effect=_capture_create_task),
+        patch("mmrelay.main.asyncio.to_thread", side_effect=inline_to_thread),
     ):
         mock_connect_matrix.return_value = mock_matrix_client
         mock_queue = MagicMock()
@@ -543,6 +570,10 @@ def test_task_with_exception_result_logs_error():
         patch("mmrelay.main.get_message_queue") as mock_get_queue,
         patch("mmrelay.main.shutdown_plugins"),
         patch("mmrelay.main.stop_message_queue"),
+        patch(
+            "mmrelay.main.asyncio.get_running_loop",
+            side_effect=make_patched_get_running_loop(),
+        ),
         patch("mmrelay.main.asyncio.Event", return_value=_ImmediateEvent()),
         patch("mmrelay.main.meshtastic_utils.check_connection", new=_async_noop),
         patch("mmrelay.main.asyncio.gather") as mock_gather,

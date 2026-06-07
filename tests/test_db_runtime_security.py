@@ -588,6 +588,19 @@ def test_run_async_queued_work_completes_during_close(db_manager):
     first_release = threading.Event()
     second_started = threading.Event()
     second_release = threading.Event()
+    second_submitted = threading.Event()
+    submit_count = 0
+    submitted_futures = []
+    real_submit = manager._async_executor.submit
+
+    def tracked_submit(*args, **kwargs):
+        nonlocal submit_count
+        worker_future = real_submit(*args, **kwargs)
+        submitted_futures.append(worker_future)
+        submit_count += 1
+        if submit_count == 2:
+            second_submitted.set()
+        return worker_future
 
     def first_write(cursor):
         first_started.set()
@@ -620,7 +633,13 @@ def test_run_async_queued_work_completes_during_close(db_manager):
             await asyncio.sleep(0.01)
         assert first_started.is_set(), "First queued write never started"
         task2 = asyncio.create_task(manager.run_async(second_write, write=True))
-        await asyncio.sleep(0)
+        submit_deadline = asyncio.get_running_loop().time() + operation_timeout
+        while (
+            not second_submitted.is_set()
+            and asyncio.get_running_loop().time() < submit_deadline
+        ):
+            await asyncio.sleep(0.01)
+        assert second_submitted.is_set(), "Second queued write was never submitted"
 
         close_started = threading.Event()
         close_done = threading.Event()
@@ -685,11 +704,28 @@ def test_run_async_queued_work_completes_during_close(db_manager):
             results = []
             for i, task in enumerate((task1, task2)):
                 if task.done():
-                    results.append(task.result())
+                    if task.cancelled():
+                        results.append(f"task{i + 1}_cancelled")
+                    else:
+                        results.append(task.result())
                 else:
                     task.cancel()
                     results.append(f"task{i + 1}_cancelled")
-            raise AssertionError(f"Tasks did not complete: {results}") from err
+            future_states = [
+                (
+                    future.done(),
+                    future.running(),
+                    future.cancelled(),
+                    future.exception(timeout=0) if future.done() else None,
+                )
+                for future in submitted_futures
+            ]
+            raise AssertionError(
+                f"Tasks did not complete: {results}; futures={future_states}; "
+                f"second_started={second_started.is_set()}; "
+                f"second_released={second_release.is_set()}; "
+                f"close_done={close_done.is_set()}"
+            ) from err
         finally:
             first_release.set()
             second_release.set()
@@ -704,7 +740,8 @@ def test_run_async_queued_work_completes_during_close(db_manager):
 
         return result1, result2
 
-    result1, result2 = asyncio.run(run_test())
+    with patch.object(manager._async_executor, "submit", side_effect=tracked_submit):
+        result1, result2 = asyncio.run(run_test())
     assert (result1, result2) == ("first", "second")
 
     with contextlib.closing(sqlite3.connect(db_path)) as conn:

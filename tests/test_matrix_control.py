@@ -636,7 +636,7 @@ async def test_status_command_reports_bridge_summary(monkeypatch) -> None:
     assert "node: NICK / Relay Node / HELTEC_V4" in sent[-1]
     assert "nodes: 2" in sent[-1]
     assert "rooms: 3 total, 1 channels, 1 dm, 1 control" in sent[-1]
-    assert "queue: 2, running: true" in sent[-1]
+    assert "queue: 2 queued, idle, running true" in sent[-1]
 
 
 @pytest.mark.asyncio
