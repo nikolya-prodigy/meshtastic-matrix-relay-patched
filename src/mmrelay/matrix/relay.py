@@ -351,13 +351,13 @@ async def matrix_relay(
             plain_body = message
         elif has_markdown or has_html:
             try:
-                import bleach  # type: ignore[import-untyped]
                 import markdown
+                import nh3
 
                 raw_html = markdown.markdown(safe_message)
-                formatted_body = bleach.clean(
+                formatted_body = nh3.clean(
                     raw_html,
-                    tags=[
+                    tags={
                         "b",
                         "strong",
                         "i",
@@ -371,9 +371,8 @@ async def matrix_relay(
                         "ol",
                         "li",
                         "p",
-                    ],
-                    attributes={"a": ["href"]},
-                    strip=True,
+                    },
+                    attributes={"a": {"href"}},
                 )
                 plain_body = message
             except ImportError:

@@ -18,7 +18,7 @@ jobs:
       HELM_IMAGE: alpine/helm:3.14.2
       HELM_IMAGE_CACHE_VERSION: 1
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Derive Helm image cache metadata
         id: helm-image-cache-meta
@@ -81,7 +81,7 @@ jobs:
       - name: Log in to Docker Hub
         if: ${{ success() && steps.helm-image-cache.outputs.cache-hit != 'true' }}
         continue-on-error: true
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
