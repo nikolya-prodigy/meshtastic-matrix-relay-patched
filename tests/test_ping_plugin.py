@@ -958,7 +958,9 @@ class TestPingPluginAutoPong(unittest.TestCase):
 
     @patch("mmrelay.meshtastic_utils.connect_meshtastic")
     @patch("asyncio.sleep")
-    def test_auto_pong_replies_to_configured_words(self, mock_sleep, mock_connect):
+    def test_auto_pong_replies_to_configured_words_without_consuming(
+        self, mock_sleep, mock_connect
+    ):
         mock_client = MagicMock()
         mock_client.myInfo.my_node_num = 123456789
         mock_connect.return_value = mock_client
@@ -976,7 +978,7 @@ class TestPingPluginAutoPong(unittest.TestCase):
                     result = await self.plugin.handle_meshtastic_message(
                         packet, "formatted_message", "TestNode", "TestMesh"
                     )
-                    self.assertTrue(result)
+                    self.assertFalse(result)
                     mock_sleep.assert_called_once_with(1.0)
                     self.plugin.send_message.assert_called_once_with(
                         text="pong\n\nlink: LoRa", channel=0, reply_id=42
@@ -1027,7 +1029,7 @@ class TestPingPluginAutoPong(unittest.TestCase):
             result = await self.plugin.handle_meshtastic_message(
                 packet, "formatted_message", "TestNode", "TestMesh"
             )
-            self.assertTrue(result)
+            self.assertFalse(result)
             self.plugin.is_channel_enabled.assert_not_called()
             mock_sleep.assert_called_once_with(1.0)
             self.plugin.send_message.assert_called_once_with(
@@ -1069,7 +1071,7 @@ class TestPingPluginAutoPong(unittest.TestCase):
             result = await self.plugin.handle_meshtastic_message(
                 packet, "formatted_message", "TestNode", "TestMesh"
             )
-            self.assertTrue(result)
+            self.assertFalse(result)
             mock_sleep.assert_called_once_with(1.0)
             self.plugin.send_message.assert_called_once_with(
                 text=(
@@ -1103,7 +1105,7 @@ class TestPingPluginAutoPong(unittest.TestCase):
             result = await self.plugin.handle_meshtastic_message(
                 packet, "formatted_message", "TestNode", "TestMesh"
             )
-            self.assertTrue(result)
+            self.assertFalse(result)
             mock_sleep.assert_called_once_with(1.0)
             self.plugin.send_message.assert_called_once_with(
                 text="pong", channel=0, reply_id=91
@@ -1133,7 +1135,7 @@ class TestPingPluginAutoPong(unittest.TestCase):
             result = await self.plugin.handle_meshtastic_message(
                 packet, "formatted_message", "TestNode", "TestMesh"
             )
-            self.assertTrue(result)
+            self.assertFalse(result)
             self.plugin.is_channel_enabled.assert_not_called()
             mock_sleep.assert_called_once_with(1.0)
             self.plugin.send_message.assert_called_once_with(

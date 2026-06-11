@@ -204,10 +204,10 @@ class Plugin(BasePlugin):
         to_id = packet.get("to")
         if not meshtastic_client:
             self.logger.warning("Meshtastic client unavailable; skipping ping")
-            return True
+            return False if is_auto_pong else True
         if not getattr(meshtastic_client, "myInfo", None):
             self.logger.warning("Meshtastic client myInfo unavailable; skipping ping")
-            return True
+            return False if is_auto_pong else True
 
         my_id = meshtastic_client.myInfo.my_node_num
 
@@ -221,7 +221,7 @@ class Plugin(BasePlugin):
         from_id = packet.get("fromId")
         if is_direct_message and not from_id:
             self.logger.warning("Direct message missing fromId; cannot reply")
-            return True
+            return False if is_auto_pong else True
 
         if is_auto_pong:
             channel_enabled = self.is_auto_pong_channel_enabled(
@@ -275,7 +275,7 @@ class Plugin(BasePlugin):
         else:
             self.send_message(text=reply_message, channel=channel, reply_id=reply_id)
 
-        return True
+        return False if is_auto_pong else True
 
     def get_matrix_commands(self) -> list[str]:
         """
