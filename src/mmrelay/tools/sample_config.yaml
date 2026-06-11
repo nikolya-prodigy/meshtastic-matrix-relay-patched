@@ -152,19 +152,16 @@ plugins:
     # When false (default): responds only to explicit !ping.
     # When true: responds to bare mesh-side "ping" messages with "pong".
     #mimic_mode: false
+    # Auto-reply to exact bare mesh-side words, without enabling all mimic-mode ping variants.
+    #auto_pong:
+    #  enabled: false
+    #  triggers: ["ping", "пинг"]
+    #  channels: all
+    #  response: "pong"
+    #  include_link_details: true # Adds link: LoRa/MQTT, hops, SNR, RSSI and relay when available
     # When true (default: false): appends the hop count to mesh ping responses (e.g., "Pong?!? (2 hops 🦘)").
     # Only visible when the ping came from the LoRa network; direct and MQTT messages are unaffected.
     #display_hops: false
-  weather:
-    active: true
-    #require_bot_mention: true  # Override global setting for this plugin only
-    units: imperial # Options: metric, imperial - Default is metric
-    #channels: [] # Empty list, will only respond to DMs
-    # Optional command aliases. Map any name to a canonical command (weather, hourly, daily).
-    # Useful for shorter or locale-specific alternatives (e.g. !meteo → !daily).
-    #command_aliases:
-    #  meteo: daily
-    #  wx: weather
   nodes:
     active: true
     #require_bot_mention: true  # Override global setting for this plugin only

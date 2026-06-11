@@ -533,10 +533,10 @@ async def test_channels_command_lists_discovered_channels(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_weather_nodes_command_lists_environment_sensors(monkeypatch) -> None:
+async def test_weather_command_lists_environment_sensors(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
 
-    handled = await control.handle_control_room_message(_room(), _event("weather nodes"))
+    handled = await control.handle_control_room_message(_room(), _event("weather"))
 
     assert handled is True
     assert "Weather sensor nodes: 1" in sent[-1]
@@ -547,7 +547,7 @@ async def test_weather_nodes_command_lists_environment_sensors(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_weather_nodes_command_uses_stored_environment_telemetry(monkeypatch) -> None:
+async def test_weather_command_uses_stored_environment_telemetry(monkeypatch) -> None:
     from mmrelay.plugins.telemetry_plugin import Plugin as TelemetryPlugin
 
     sent = _capture_messages(monkeypatch)
@@ -569,7 +569,7 @@ async def test_weather_nodes_command_uses_stored_environment_telemetry(monkeypat
 
     monkeypatch.setattr(TelemetryPlugin, "get_node_data", get_node_data)
 
-    handled = await control.handle_control_room_message(_room(), _event("weather nodes"))
+    handled = await control.handle_control_room_message(_room(), _event("weather"))
 
     assert handled is True
     assert "Weather sensor nodes: 1" in sent[-1]
@@ -577,6 +577,75 @@ async def test_weather_nodes_command_uses_stored_environment_telemetry(monkeypat
     assert "temp: 18.9C" in sent[-1]
     assert "humidity: 72%" in sent[-1]
     assert "pressure: 1008.4 hPa" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_weather_command_shows_single_node_by_cached_number(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+
+    await control.handle_control_room_message(_room(), _event("nodes"))
+    handled = await control.handle_control_room_message(_room(), _event("weather 1"))
+
+    assert handled is True
+    assert "Weather for NEW New Node" in sent[-1]
+    assert "id: !new" in sent[-1]
+    assert "temp: 23.4C" in sent[-1]
+    assert "humidity: 55%" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_weather_command_shows_single_node_by_full_name(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+
+    handled = await control.handle_control_room_message(_room(), _event("weather New Node"))
+
+    assert handled is True
+    assert "Weather for NEW New Node" in sent[-1]
+    assert "pressure: 1012.8 hPa" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_weather_command_reports_missing_environment_metrics(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+
+    handled = await control.handle_control_room_message(_room(), _event("weather Old Node"))
+
+    assert handled is True
+    assert "No environment sensor readings found for OLD Old Node." in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_weather_nodes_is_treated_as_node_lookup(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+
+    handled = await control.handle_control_room_message(_room(), _event("weather nodes"))
+
+    assert handled is True
+    assert "Node not found." in sent[-1]
+    assert "weather <number>" in sent[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["hourly", "daily"])
+async def test_weather_forecast_commands_are_not_available(
+    monkeypatch, command: str
+) -> None:
+    sent = _capture_messages(monkeypatch)
+
+    handled = await control.handle_control_room_message(_room(), _event(command))
+
+    assert handled is True
+    assert f"Unknown command: {command}" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_ping_command_is_not_available_in_control_room(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+
+    handled = await control.handle_control_room_message(_room(), _event("ping"))
+
+    assert handled is True
+    assert "Unknown command: ping" in sent[-1]
 
 
 @pytest.mark.asyncio

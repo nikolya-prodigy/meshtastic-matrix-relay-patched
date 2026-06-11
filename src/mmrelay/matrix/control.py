@@ -27,7 +27,6 @@ CONTROL_HELP = """Meshtastic bot control
 
 Commands:
 help - Show this help
-ping - Check that the bridge responds
 health - Show mesh health summary
 nodes [online|limit|all] - List known Meshtastic nodes
 find <query> - Search known Meshtastic nodes and renumber the result
@@ -44,10 +43,7 @@ sent [limit] - Show recent outgoing send attempts
 writers - Show who can write to Meshtastic channel rooms
 refresh - Refresh managed rooms, profiles and bot avatar
 map - Render a map of nodes with positions
-weather - Current weather for the mesh area
-weather nodes - List nodes with environment sensor readings
-hourly - Hourly weather forecast
-daily - Daily weather forecast
+weather [<number|node-id|name>] - List environment sensor readings or show one node
 battery - Telemetry battery graph
 voltage - Telemetry voltage graph
 air - Telemetry air utilization graph
@@ -1274,7 +1270,48 @@ def _latest_environment_record_for_node(
     return latest
 
 
-async def _handle_weather_nodes_command(room: Any) -> bool:
+def _environment_metrics_for_node(node_id: Any, info: dict[str, Any]) -> dict[str, Any]:
+    metrics = _environment_metrics(info)
+    if metrics:
+        return metrics
+    return _latest_environment_record_for_node(node_id, info)
+
+
+def _stable_node_id(node_id: Any, info: dict[str, Any]) -> str:
+    user = info.get("user") if isinstance(info.get("user"), dict) else {}
+    return str(user.get("id") or node_id)
+
+
+def _weather_line_for_node(
+    node_id: Any,
+    info: dict[str, Any],
+    entry: NodeEntry | None = None,
+    number: int | None = None,
+) -> str | None:
+    metrics = _environment_metrics_for_node(node_id, info)
+    formatted = _format_environment_metrics(metrics)
+    if not formatted:
+        return None
+
+    stable_node_id = _stable_node_id(node_id, info)
+    title = entry.title if entry else stable_node_id
+    last = entry.last_heard if entry else "?"
+    if metrics.get("time") is not None:
+        try:
+            last = _relative_time(float(metrics["time"]))
+        except (TypeError, ValueError, OverflowError, OSError):
+            pass
+
+    prefix = f"{number}. " if number is not None else ""
+    return (
+        f"{prefix}{title}\n"
+        f"   id: {stable_node_id}\n"
+        f"   {formatted}\n"
+        f"   last: {last}"
+    )
+
+
+async def _handle_weather_command(room: Any, event: Any, args: str) -> bool:
     interface = _get_interface()
     if interface is None:
         await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
@@ -1287,32 +1324,35 @@ async def _handle_weather_nodes_command(room: Any) -> bool:
 
     entries = _build_node_index(interface)
     entry_by_id = {entry.node_id: entry for entry in entries}
+
+    if args.strip():
+        entry = _resolve_node_entry(room, event, args)
+        info = _node_info_for_entry(interface, entry) if entry is not None else None
+        if entry is None or info is None:
+            await send_control_message(
+                room.room_id,
+                "Node not found. Run `nodes` or `find <query>`, then use `weather <number>`.",
+            )
+            return True
+        line = _weather_line_for_node(entry.node_id, info, entry)
+        if line is None:
+            await send_control_message(
+                room.room_id,
+                f"No environment sensor readings found for {entry.title}.",
+            )
+            return True
+        await send_control_message(room.room_id, f"Weather for {entry.title}\n\n{line}")
+        return True
+
     lines: list[str] = []
     for node_id, info in nodes.items():
         if not isinstance(info, dict):
             continue
-        metrics = _environment_metrics(info)
-        if not metrics:
-            metrics = _latest_environment_record_for_node(node_id, info)
-        formatted = _format_environment_metrics(metrics)
-        if not formatted:
-            continue
-        user = info.get("user") if isinstance(info.get("user"), dict) else {}
-        stable_node_id = str(user.get("id") or node_id)
+        stable_node_id = _stable_node_id(node_id, info)
         entry = entry_by_id.get(stable_node_id)
-        title = entry.title if entry else stable_node_id
-        last = entry.last_heard if entry else "?"
-        if metrics.get("time") is not None:
-            try:
-                last = _relative_time(float(metrics["time"]))
-            except (TypeError, ValueError, OverflowError, OSError):
-                pass
-        lines.append(
-            f"{len(lines) + 1}. {title}\n"
-            f"   id: {stable_node_id}\n"
-            f"   {formatted}\n"
-            f"   last: {last}"
-        )
+        line = _weather_line_for_node(node_id, info, entry, len(lines) + 1)
+        if line is not None:
+            lines.append(line)
 
     if not lines:
         await send_control_message(room.room_id, "No nodes with environment sensor readings found.")
@@ -1345,12 +1385,14 @@ def _resolve_node_entry(room: Any, event: Any, args: str) -> NodeEntry | None:
         return cached_entry
 
     token = _first_arg(args)
-    if not token:
+    query = args.strip()
+    if not query:
         return None
     interface = _get_interface()
     if interface is None:
         return None
-    return _find_node_by_token(_build_node_index(interface), token)
+    entries = _build_node_index(interface)
+    return _find_node_by_token(entries, token) or _find_node_by_token(entries, query)
 
 
 async def _handle_node_command(room: Any, event: Any, args: str) -> bool:
@@ -1949,8 +1991,8 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
         handled = await _handle_refresh_command(room)
         await _send_control_reaction(room, event, "✅")
         return handled
-    if command.casefold() == "weather" and args.casefold().strip() == "nodes":
-        handled = await _handle_weather_nodes_command(room)
+    if command.casefold() == "weather":
+        handled = await _handle_weather_command(room, event, args)
         await _send_control_reaction(room, event, "✅")
         return handled
 

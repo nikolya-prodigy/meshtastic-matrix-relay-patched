@@ -2783,9 +2783,6 @@ logging:
 # plugins:
 #   ping:
 #     active: true
-#   weather:
-#     active: true
-#     units: metric
 """
 
 

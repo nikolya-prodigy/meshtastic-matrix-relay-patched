@@ -68,11 +68,11 @@ class TestPingPlugin(unittest.TestCase):
     def test_description_property(self):
         self.assertEqual(
             self.plugin.description,
-            "Check connectivity with the relay; optional mimic mode responds to mesh pings",
+            "Respond to Meshtastic ping messages with optional link details",
         )
 
     def test_get_matrix_commands(self):
-        self.assertEqual(self.plugin.get_matrix_commands(), ["ping"])
+        self.assertEqual(self.plugin.get_matrix_commands(), [])
 
     def test_get_mesh_commands(self):
         self.assertEqual(self.plugin.get_mesh_commands(), ["ping"])
@@ -979,7 +979,7 @@ class TestPingPluginAutoPong(unittest.TestCase):
                     self.assertTrue(result)
                     mock_sleep.assert_called_once_with(1.0)
                     self.plugin.send_message.assert_called_once_with(
-                        text="pong", channel=0, reply_id=42
+                        text="pong\n\nlink: LoRa", channel=0, reply_id=42
                     )
                     mock_sleep.reset_mock()
                     self.plugin.send_message.reset_mock()
@@ -1031,7 +1031,82 @@ class TestPingPluginAutoPong(unittest.TestCase):
             self.plugin.is_channel_enabled.assert_not_called()
             mock_sleep.assert_called_once_with(1.0)
             self.plugin.send_message.assert_called_once_with(
-                text="pong", channel=2, destination_id="!12345678", reply_id=77
+                text="pong\n\nlink: LoRa",
+                channel=2,
+                destination_id="!12345678",
+                reply_id=77,
+            )
+
+        asyncio.run(run_test())
+
+    @patch("mmrelay.meshtastic_utils.connect_meshtastic")
+    @patch("asyncio.sleep")
+    def test_auto_pong_includes_link_details(self, mock_sleep, mock_connect):
+        mock_client = MagicMock()
+        mock_client.myInfo.my_node_num = 123456789
+        mock_client.nodesByNum = {
+            16: {"user": {"shortName": "No5g", "longName": "No5g Relay"}}
+        }
+        mock_client.nodes = {
+            "!00000010": {"user": {"shortName": "No5g", "longName": "No5g Relay"}}
+        }
+        mock_connect.return_value = mock_client
+
+        packet = {
+            "decoded": {"text": "ping"},
+            "channel": 0,
+            "fromId": "!12345678",
+            "to": BROADCAST_NUM,
+            "id": 90,
+            "hopStart": 5,
+            "hopLimit": 3,
+            "rxSnr": -18.75,
+            "rxRssi": -110,
+            "relayNode": 16,
+        }
+
+        async def run_test() -> None:
+            result = await self.plugin.handle_meshtastic_message(
+                packet, "formatted_message", "TestNode", "TestMesh"
+            )
+            self.assertTrue(result)
+            mock_sleep.assert_called_once_with(1.0)
+            self.plugin.send_message.assert_called_once_with(
+                text=(
+                    "pong\n\n"
+                    "link: LoRa, 2 hops, SNR -18.8 dB, RSSI -110 dBm, relay No5g #16"
+                ),
+                channel=0,
+                reply_id=90,
+            )
+
+        asyncio.run(run_test())
+
+    @patch("mmrelay.meshtastic_utils.connect_meshtastic")
+    @patch("asyncio.sleep")
+    def test_auto_pong_link_details_can_be_disabled(self, mock_sleep, mock_connect):
+        self.plugin.config["auto_pong"]["include_link_details"] = False
+        mock_client = MagicMock()
+        mock_client.myInfo.my_node_num = 123456789
+        mock_connect.return_value = mock_client
+
+        packet = {
+            "decoded": {"text": "ping"},
+            "channel": 0,
+            "fromId": "!12345678",
+            "to": BROADCAST_NUM,
+            "id": 91,
+            "viaMqtt": True,
+        }
+
+        async def run_test() -> None:
+            result = await self.plugin.handle_meshtastic_message(
+                packet, "formatted_message", "TestNode", "TestMesh"
+            )
+            self.assertTrue(result)
+            mock_sleep.assert_called_once_with(1.0)
+            self.plugin.send_message.assert_called_once_with(
+                text="pong", channel=0, reply_id=91
             )
 
         asyncio.run(run_test())
@@ -1062,7 +1137,7 @@ class TestPingPluginAutoPong(unittest.TestCase):
             self.plugin.is_channel_enabled.assert_not_called()
             mock_sleep.assert_called_once_with(1.0)
             self.plugin.send_message.assert_called_once_with(
-                text="pong", channel=0, reply_id=88
+                text="pong\n\nlink: LoRa", channel=0, reply_id=88
             )
 
         asyncio.run(run_test())
@@ -1106,7 +1181,7 @@ class TestPingPluginMatrixHandling(unittest.TestCase):
         async def run_test() -> None:
             result = await self.plugin.handle_room_message(room, event, "full_message")
             self.assertFalse(result)
-            self.plugin.matches.assert_called_once_with(event)
+            self.plugin.matches.assert_not_called()
             self.plugin.send_matrix_message.assert_not_called()
             self.plugin.send_matrix_reaction.assert_not_called()
 
@@ -1120,14 +1195,10 @@ class TestPingPluginMatrixHandling(unittest.TestCase):
 
         async def run_test() -> None:
             result = await self.plugin.handle_room_message(room, event, "bot: !ping")
-            self.assertTrue(result)
-            self.plugin.matches.assert_called_once_with(event)
-            self.plugin.send_matrix_message.assert_called_once_with(
-                "!test:matrix.org", PING_RESPONSE
-            )
-            self.plugin.send_matrix_reaction.assert_called_once_with(
-                "!test:matrix.org", event.event_id, "✅"
-            )
+            self.assertFalse(result)
+            self.plugin.matches.assert_not_called()
+            self.plugin.send_matrix_message.assert_not_called()
+            self.plugin.send_matrix_reaction.assert_not_called()
 
         asyncio.run(run_test())
 
@@ -1142,10 +1213,8 @@ class TestPingPluginMatrixHandling(unittest.TestCase):
 
         async def run_test() -> None:
             result = await self.plugin.handle_room_message(room, event, "bot: !ping")
-            self.assertTrue(result)
-            self.plugin.send_matrix_reaction.assert_called_once_with(
-                "!test:matrix.org", event.event_id, "❌"
-            )
+            self.assertFalse(result)
+            self.plugin.send_matrix_reaction.assert_not_called()
 
         asyncio.run(run_test())
 

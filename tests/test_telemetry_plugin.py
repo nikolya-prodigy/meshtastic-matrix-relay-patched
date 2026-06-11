@@ -263,7 +263,7 @@ class TestTelemetryPlugin(unittest.TestCase):
         asyncio.run(run_test())
 
     def test_handle_meshtastic_message_environment_metrics(self):
-        """Environment telemetry packets should be stored for weather node listings."""
+        """Environment telemetry packets should be stored for the Matrix weather command."""
         packet = {
             "fromId": "!12345678",
             "decoded": {

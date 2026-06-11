@@ -564,56 +564,6 @@ def test_output_messages(self, mock_print):
     mock_print.assert_any_call("Expected message")
 ```
 
-### Exception Handling in Plugins
-
-When testing plugin exception handling, ensure you test both network-level exceptions and data parsing exceptions:
-
-```python
-@patch("mmrelay.plugins.weather_plugin.requests.get")
-def test_weather_plugin_requests_exception(self, mock_get):
-    """Test weather plugin handles requests exceptions properly."""
-    # Mock network-level failure
-    mock_get.side_effect = requests.exceptions.ConnectionError("Network error")
-
-    plugin = Plugin()
-    result = plugin.generate_forecast(40.7128, -74.0060)
-
-    self.assertEqual(result, "Error fetching weather data.")
-
-@patch("mmrelay.plugins.weather_plugin.requests.get")
-def test_weather_plugin_attribute_error_fallback(self, mock_get):
-    """Test weather plugin handles AttributeError during response processing."""
-    # Mock response that raises AttributeError on raise_for_status
-    mock_response = MagicMock()
-    mock_response.raise_for_status.side_effect = AttributeError("Some error")
-    mock_response.raise_for_status.__module__ = "requests"  # Make it look like requests exception
-    mock_get.return_value = mock_response
-
-    plugin = Plugin()
-    result = plugin.generate_forecast(40.7128, -74.0060)
-
-    self.assertEqual(result, "Error fetching weather data.")
-```
-
-**Key Patterns for Exception Testing:**
-
-1. **Network Exceptions**: Test `requests.exceptions.RequestException` and subclasses
-2. **Attribute Errors**: Test cases where response objects might not have expected attributes
-3. **Data Parsing Errors**: Test malformed JSON responses and missing data fields
-4. **Multiple Exception Types**: Use tuple catching for related exceptions:
-
-```python
-# ✅ GOOD: Catch related exceptions together
-except (requests.exceptions.RequestException, AttributeError):
-    self.logger.exception("Error fetching weather data")
-    return "Error fetching weather data."
-
-# ✅ GOOD: Handle parsing errors specifically
-except (KeyError, IndexError, TypeError, ValueError, AttributeError):
-    self.logger.exception("Malformed weather data")
-    return "Error parsing weather data."
-```
-
 ## Troubleshooting
 
 ### RuntimeWarnings About Unawaited Coroutines

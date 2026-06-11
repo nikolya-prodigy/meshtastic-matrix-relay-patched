@@ -156,7 +156,7 @@ Files updated with constant imports:
 - Message queue: `message_queue.py`
 - Logging: `log_utils.py`
 - Setup utilities: `setup_utils.py`
-- Plugins: `base_plugin.py`, `mesh_relay_plugin.py`, `drop_plugin.py`, `weather_plugin.py`
+- Plugins: `base_plugin.py`, `mesh_relay_plugin.py`, `drop_plugin.py`
 - Tests: `test_message_queue.py`, `test_message_queue_edge_cases.py`
 
 All 595 tests continue to pass, ensuring no functionality was broken during the extraction process.

@@ -7,11 +7,9 @@ execution by defining trusted sources and dangerous patterns.
 """
 
 import re
-from types import MappingProxyType
-from typing import Final, TypedDict
+from typing import Final
 
 # Message length limits
-MAX_FORECAST_LENGTH: Final[int] = 200
 MAX_PUNCTUATION_LENGTH: Final[int] = 5
 
 # Map image size limits
@@ -81,7 +79,6 @@ DEFAULT_SUBPROCESS_TIMEOUT_SECONDS: Final[int] = 120
 GIT_COMMAND_TIMEOUT_SECONDS: Final[int] = 120
 GIT_RETRY_ATTEMPTS: Final[int] = 3
 GIT_RETRY_DELAY_SECONDS: Final[int] = 2
-WEATHER_API_TIMEOUT_SECONDS: Final[int] = 10
 
 # Scheduler timing
 SCHEDULER_SHUTDOWN_TIMEOUT_SECONDS: Final[int] = 5
@@ -105,120 +102,6 @@ SENSITIVE_URL_PARAMS: Final[frozenset[str]] = frozenset(
         "client_secret",
         "bearer",
     }
-)
-
-# Weather plugin constants
-WEATHER_COMMANDS: Final[tuple[str, ...]] = ("weather", "hourly", "daily")
-
-# Weather mode constants
-WEATHER_MODE_CURRENT: Final[str] = "weather"
-WEATHER_MODE_HOURLY: Final[str] = "hourly"
-WEATHER_MODE_DAILY: Final[str] = "daily"
-WEATHER_SLOT_NOW: Final[str] = "now"
-
-# Weather unit constants
-WEATHER_UNITS_METRIC: Final[str] = "metric"
-WEATHER_UNITS_IMPERIAL: Final[str] = "imperial"
-
-# Forecast configuration
-DAILY_FORECAST_DAYS: Final[int] = 5
-HOURLY_FORECAST_DAYS: Final[int] = 3
-HOURLY_FORECAST_SLOTS: Final[tuple[tuple[int, str], ...]] = (
-    (3, "+3h"),
-    (6, "+6h"),
-    (12, "+12h"),
-)
-GEOCODING_RESULT_COUNT: Final[int] = 1
-
-# Open-Meteo API URLs
-OPEN_METEO_FORECAST_API_URL: Final[str] = "https://api.open-meteo.com/v1/forecast"
-OPEN_METEO_GEOCODING_API_URL: Final[str] = (
-    "https://geocoding-api.open-meteo.com/v1/search"
-)
-
-# Open-Meteo API query parameters
-OPEN_METEO_HOURLY_FIELDS: Final[tuple[str, ...]] = (
-    "temperature_2m",
-    "precipitation_probability",
-    "weathercode",
-    "is_day",
-    "relativehumidity_2m",
-    "windspeed_10m",
-    "winddirection_10m",
-)
-OPEN_METEO_DAILY_FIELDS: Final[tuple[str, ...]] = (
-    "weathercode",
-    "temperature_2m_max",
-    "temperature_2m_min",
-)
-OPEN_METEO_TIMEZONE_AUTO: Final[str] = "timezone=auto"
-OPEN_METEO_CURRENT_WEATHER_FLAG: Final[str] = "current_weather=true"
-
-
-class HourlyConfigEntry(TypedDict):
-    slots: tuple[str, ...]
-    offsets: tuple[int, ...]
-
-
-# Hourly forecast configuration by mode
-HOURLY_CONFIG: Final[MappingProxyType[str, HourlyConfigEntry]] = MappingProxyType(
-    {
-        WEATHER_MODE_CURRENT: {
-            "slots": (WEATHER_SLOT_NOW,),
-            "offsets": (),
-        },
-        WEATHER_MODE_HOURLY: {
-            "slots": tuple(label for _, label in HOURLY_FORECAST_SLOTS),
-            "offsets": tuple(offset for offset, _ in HOURLY_FORECAST_SLOTS),
-        },
-    }
-)
-
-
-# Weather code to text mapping (Open-Meteo codes)
-# Keys are weather codes, values are (day_text, night_text) tuples or single text for both
-def _make_weather_mapping() -> dict[int, str]:
-    def day_night(day: str, night: str) -> str:
-        return f"DAY:{day}|NIGHT:{night}"
-
-    def both(text: str) -> str:
-        return f"BOTH:{text}"
-
-    raw: dict[int, str] = {
-        0: day_night("☀️ Clear sky", "🌙 Clear sky"),
-        1: day_night("🌤️ Mainly clear", "🌙🌤️ Mainly clear"),
-        2: day_night("⛅️ Partly cloudy", "🌙⛅️ Partly cloudy"),
-        3: day_night("☁️ Overcast", "🌙☁️ Overcast"),
-        45: day_night("🌫️ Fog", "🌙🌫️ Fog"),
-        48: day_night("🌫️ Depositing rime fog", "🌙🌫️ Depositing rime fog"),
-        51: both("🌧️ Light drizzle"),
-        53: both("🌧️ Moderate drizzle"),
-        55: both("🌧️ Dense drizzle"),
-        56: both("🌧️ Light freezing drizzle"),
-        57: both("🌧️ Dense freezing drizzle"),
-        61: both("🌧️ Light rain"),
-        63: both("🌧️ Moderate rain"),
-        65: both("🌧️ Heavy rain"),
-        66: both("🌧️ Light freezing rain"),
-        67: both("🌧️ Heavy freezing rain"),
-        71: both("❄️ Light snow fall"),
-        73: both("❄️ Moderate snow fall"),
-        75: both("❄️ Heavy snow fall"),
-        77: both("❄️ Snow grains"),
-        80: both("🌧️ Light rain showers"),
-        81: both("🌧️ Moderate rain showers"),
-        82: both("🌧️ Violent rain showers"),
-        85: both("❄️ Light snow showers"),
-        86: both("❄️ Heavy snow showers"),
-        95: both("⛈️ Thunderstorm"),
-        96: both("⛈️ Thunderstorm with slight hail"),
-        99: both("⛈️ Thunderstorm with heavy hail"),
-    }
-    return raw
-
-
-WEATHER_CODE_TEXT_MAPPING: Final[MappingProxyType[int, str]] = MappingProxyType(
-    _make_weather_mapping()
 )
 
 # Telemetry plugin constants

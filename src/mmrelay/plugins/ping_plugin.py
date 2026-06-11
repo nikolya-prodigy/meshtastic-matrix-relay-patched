@@ -62,10 +62,11 @@ class Plugin(BasePlugin):
     is_core_plugin = True
     _invalid_mimic_mode_warned: bool = False
     _invalid_auto_pong_warned: bool = False
+    _invalid_auto_pong_link_details_warned: bool = False
 
     @property
     def description(self) -> str:
-        return "Check connectivity with the relay; optional mimic mode responds to mesh pings"
+        return "Respond to Meshtastic ping messages with optional link details"
 
     def get_mimic_mode(self) -> bool:
         mimic_mode = self.config.get("mimic_mode", False)
@@ -111,6 +112,23 @@ class Plugin(BasePlugin):
 
         response = auto_pong.get("response", "pong")
         return response if isinstance(response, str) and response else "pong"
+
+    def get_auto_pong_include_link_details(self) -> bool:
+        auto_pong = self.config.get("auto_pong", {})
+        if not isinstance(auto_pong, dict):
+            return False
+
+        raw_value = auto_pong.get("include_link_details", True)
+        if isinstance(raw_value, bool):
+            return raw_value
+
+        if not self._invalid_auto_pong_link_details_warned:
+            self.logger.warning(
+                "Invalid ping.auto_pong.include_link_details value %r; expected boolean. Defaulting to true.",
+                raw_value,
+            )
+            self._invalid_auto_pong_link_details_warned = True
+        return True
 
     def is_auto_pong_channel_enabled(
         self, channel: int | None, is_direct_message: bool
@@ -216,6 +234,13 @@ class Plugin(BasePlugin):
         if not channel_enabled:
             return False
 
+        if is_auto_pong and self.get_auto_pong_include_link_details():
+            from mmrelay.meshtastic.events import _packet_link_details
+
+            link_details = _packet_link_details(packet, meshtastic_client)
+            if link_details:
+                reply_message = f"{reply_message}\n\nlink: {link_details}"
+
         self.logger.info(
             "Processing message from %s on channel %s with plugin '%s'",
             longname,
@@ -257,11 +282,10 @@ class Plugin(BasePlugin):
         List the Matrix command names provided by this plugin.
 
         Returns:
-            A list containing the plugin's command name, or an empty list if `plugin_name` is None.
+            An empty list. Ping is a Meshtastic-side plugin; Matrix control rooms
+            use the built-in `status` command for bridge health checks.
         """
-        if self.plugin_name is None:
-            return []
-        return [self.plugin_name]
+        return []
 
     def get_mesh_commands(self) -> list[str]:
         """
@@ -281,7 +305,7 @@ class Plugin(BasePlugin):
         full_message: str,
     ) -> bool:
         """
-        Reply with the configured ping response in the Matrix room when the event matches this plugin's trigger.
+        Disable Matrix-side ping handling for this Meshtastic-side plugin.
 
         Parameters:
             room (MatrixRoom): The room containing the event; used to determine the target room_id for the reply.
@@ -289,18 +313,8 @@ class Plugin(BasePlugin):
             full_message (str): The message text (kept for compatibility; not used by this implementation).
 
         Returns:
-            `True` if the event matched and a reply was sent, `False` otherwise.
+            Always `False`; Matrix-side ping handling is intentionally disabled.
         """
         # Keep parameter names for compatibility with keyword calls in tests.
-        _ = full_message
-        if not self.matches(event):
-            return False
-
-        try:
-            await self.send_matrix_message(room.room_id, PING_RESPONSE)
-        except Exception:
-            self.logger.exception("Error handling ping command")
-            await self.send_matrix_reaction(room.room_id, event.event_id, "❌")
-            return True
-        await self.send_matrix_reaction(room.room_id, event.event_id, "✅")
-        return True
+        _ = room, event, full_message
+        return False

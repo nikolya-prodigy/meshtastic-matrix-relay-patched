@@ -38,7 +38,7 @@ class TestHelpPlugin(unittest.TestCase):
         - plugin: instantiated Plugin with a mocked logger and get_require_bot_mention returning False.
         - send_matrix_message: asynchronous mock for sending Matrix messages.
         - mock_plugin1: provides matrix commands ["nodes", "health"] and description "Show mesh nodes and health".
-        - mock_plugin2: provides matrix commands ["weather"] and description "Show weather forecast".
+        - mock_plugin2: provides matrix commands ["map"] and description "Render node map".
         - mock_plugin3: provides matrix commands ["help"] and description "List supported relay commands".
         """
         self.plugin = Plugin()
@@ -55,8 +55,8 @@ class TestHelpPlugin(unittest.TestCase):
         self.mock_plugin1.description = "Show mesh nodes and health"
 
         self.mock_plugin2 = MagicMock()
-        self.mock_plugin2.get_matrix_commands.return_value = ["weather"]
-        self.mock_plugin2.description = "Show weather forecast"
+        self.mock_plugin2.get_matrix_commands.return_value = ["map"]
+        self.mock_plugin2.description = "Render node map"
 
         self.mock_plugin3 = MagicMock()
         self.mock_plugin3.get_matrix_commands.return_value = ["help"]
@@ -187,7 +187,7 @@ class TestHelpPlugin(unittest.TestCase):
             "content": {
                 "formatted_body": (
                     '<a href="https://matrix.to/#/%40testbot%3Aexample.org">'
-                    "TestRelay</a>: !help weather"
+                    "TestRelay</a>: !help map"
                 )
             }
         }
@@ -205,7 +205,7 @@ class TestHelpPlugin(unittest.TestCase):
                 self.assertEqual(
                     sent,
                     MSG_COMMAND_HELP.format(
-                        command="weather", description=self.mock_plugin2.description
+                        command="map", description=self.mock_plugin2.description
                     ),
                 )
                 self.plugin.send_matrix_reaction.assert_called_once_with(
@@ -293,7 +293,7 @@ class TestHelpPlugin(unittest.TestCase):
             """
             Run assertions that handling a general "!help" room message results in a command list being sent.
 
-            Verifies that handle_room_message reports success, that send_matrix_message() is called once for the target room, and that the sent message contains "Available commands:" and the expected commands "nodes", "health", "weather", and "help".
+            Verifies that handle_room_message reports success, that send_matrix_message() is called once for the target room, and that the sent message contains "Available commands:" and the expected commands "nodes", "health", "map", and "help".
             """
             result = await self.plugin.handle_room_message(room, event, full_message)
 
@@ -312,7 +312,7 @@ class TestHelpPlugin(unittest.TestCase):
             self.assertIn(MSG_AVAILABLE_COMMANDS_PREFIX, message)
             self.assertIn("nodes", message)
             self.assertIn("health", message)
-            self.assertIn("weather", message)
+            self.assertIn("map", message)
             self.assertIn("help", message)
 
         asyncio.run(run_test())
@@ -333,7 +333,7 @@ class TestHelpPlugin(unittest.TestCase):
 
         room = MagicMock()
         room.room_id = "!test:matrix.org"
-        full_message = "!help weather"
+        full_message = "!help map"
         event = MagicMock()
         event.body = full_message
         event.source = {"content": {"formatted_body": ""}}
@@ -342,7 +342,7 @@ class TestHelpPlugin(unittest.TestCase):
             """
             Run the test that requesting help for a specific command results in a single sent message containing the command and its description.
 
-            Asserts that handle_room_message returns True, send_matrix_message was called once, and the sent message includes the command token (e.g. `!weather`) and its human-readable description.
+            Asserts that handle_room_message returns True, send_matrix_message was called once, and the sent message includes the command token (e.g. `!map`) and its human-readable description.
             """
             result = await self.plugin.handle_room_message(room, event, full_message)
 
@@ -356,10 +356,10 @@ class TestHelpPlugin(unittest.TestCase):
             call_args = self.plugin.send_matrix_message.call_args
             message = call_args[0][1]
 
-            # Should contain specific help for weather command
+            # Should contain specific help for map command
             self.assertIn(
                 MSG_COMMAND_HELP.format(
-                    command="weather", description="Show weather forecast"
+                    command="map", description="Render node map"
                 ),
                 message,
             )
@@ -446,7 +446,7 @@ class TestHelpPlugin(unittest.TestCase):
             self.assertIn("cmd1", message)
             self.assertIn("cmd2", message)
             self.assertIn("cmd3", message)
-            self.assertIn("weather", message)
+            self.assertIn("map", message)
 
             self.plugin.send_matrix_reaction.assert_called_once_with(
                 "!test:matrix.org", event.event_id, "✅"
