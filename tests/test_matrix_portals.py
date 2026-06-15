@@ -346,6 +346,33 @@ async def test_ensure_dm_room_uses_node_details_in_topic(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_ensure_dm_room_name_template_can_use_long_name(monkeypatch) -> None:
+    client = FakeClient()
+    config = {
+        "matrix_rooms": [],
+        "meshtastic_portals": {
+            "enabled": True,
+            "direct_messages": {"name_template": "DM {long_name}"},
+        },
+    }
+    interface = SimpleNamespace(
+        nodes={
+            "!abc": {
+                "user": {"shortName": "NOD", "longName": "Node Long Name"},
+            }
+        }
+    )
+    monkeypatch.setattr(facade, "config", config)
+    monkeypatch.setattr(facade, "bot_user_id", "@meshtasticbot:example.org")
+    monkeypatch.setattr(facade, "join_matrix_room", AsyncMock())
+
+    await ensure_dm_room(client, interface, "!abc")
+
+    assert client.created[1]["name"] == "DM Node Long Name"
+    assert config["matrix_rooms"][0]["meshtastic_node_name"] == "NOD"
+
+
+@pytest.mark.asyncio
 async def test_ensure_dm_room_create_false_updates_existing_only(monkeypatch) -> None:
     client = FakeClient()
     config = {

@@ -66,6 +66,8 @@ meshtastic_portals:
     name_template: "#{index} {name}"
   direct_messages:
     auto_create: true
+    # Available variables: {name} (best short display name),
+    # {short_name}, {long_name}, {node_id}.
     name_template: "DM {name}"
 
 meshtastic:

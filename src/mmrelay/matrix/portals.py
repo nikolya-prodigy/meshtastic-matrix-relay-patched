@@ -555,6 +555,51 @@ def _node_info(interface: Any, node_key: str) -> dict[str, Any]:
     return {}
 
 
+def _node_id_candidates(node_key: str) -> list[str]:
+    candidates = [node_key]
+    if node_key.startswith("!"):
+        candidates.append(node_key[1:])
+    else:
+        candidates.append(f"!{node_key}")
+    return candidates
+
+
+def _node_user_name(interface: Any, node_key: str, field: str) -> str | None:
+    info = _node_info(interface, node_key)
+    user = info.get("user") if isinstance(info.get("user"), dict) else {}
+    value = user.get(field) if isinstance(user, dict) else None
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _database_node_name(node_key: str, getter: Any) -> str | None:
+    for candidate in _node_id_candidates(node_key):
+        value = getter(candidate)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _dm_name_vars(node_key: str, interface: Any) -> dict[str, str]:
+    from mmrelay.db_utils import get_longname, get_shortname
+
+    short_name = _node_user_name(
+        interface, node_key, "shortName"
+    ) or _database_node_name(node_key, get_shortname)
+    long_name = _node_user_name(
+        interface, node_key, "longName"
+    ) or _database_node_name(node_key, get_longname)
+    display_name = short_name or long_name or node_key
+
+    return {
+        "name": display_name,
+        "short_name": short_name or display_name,
+        "long_name": long_name or display_name,
+        "node_id": node_key,
+    }
+
+
 def _relative_node_time(timestamp: Any) -> str | None:
     try:
         seconds = float(timestamp)
@@ -886,14 +931,17 @@ async def ensure_dm_room(
     create: bool = True,
 ) -> str | None:
     cfg = _portal_config(facade.config)
-    dm_cfg = cfg.get("direct_messages") if isinstance(cfg.get("direct_messages"), dict) else {}
-
-    from mmrelay.meshtastic.messaging import _get_node_display_name
+    dm_cfg = (
+        cfg.get("direct_messages")
+        if isinstance(cfg.get("direct_messages"), dict)
+        else {}
+    )
 
     node_key = str(node_id)
-    display_name = _get_node_display_name(node_key, interface, fallback=node_key)
+    name_vars = _dm_name_vars(node_key, interface)
+    display_name = name_vars["name"]
     template = str(dm_cfg.get("name_template") or "DM {name}")
-    room_name = template.format(name=display_name, node_id=node_key)
+    room_name = template.format(**name_vars)
     room_topic = _format_dm_topic(display_name, node_key, interface)
 
     matrix_rooms = facade.config.setdefault("matrix_rooms", [])
