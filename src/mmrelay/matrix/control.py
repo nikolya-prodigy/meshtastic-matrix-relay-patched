@@ -1842,6 +1842,7 @@ async def _handle_refresh_command(room: Any) -> bool:
     before_counts = _room_type_counts(before_rooms)
 
     await facade.ensure_bot_avatar(client)
+    restored_dm = await facade.restore_dm_rooms(client, interface, facade.config)
     await facade.ensure_channel_rooms(client, interface, facade.config)
     await facade.ensure_control_room(client, facade.config)
 
@@ -1869,6 +1870,7 @@ async def _handle_refresh_command(room: Any) -> bool:
             "Refresh complete.\n"
             f"rooms: {before} -> {after}\n"
             f"channels: {before_counts['channel']} -> {after_counts['channel']}\n"
+            f"dm restored: {restored_dm}\n"
             f"dm refreshed: {refreshed_dm}\n"
             f"control rooms: {after_counts['control']}"
         ),

@@ -705,6 +705,12 @@ async def on_room_message(
             )
             success = True
             destination_kwargs = _meshtastic_destination_kwargs(room_config)
+            destination = destination_kwargs.get("destinationId")
+            radio_target = (
+                f"radio direct {destination}"
+                if destination not in (None, "")
+                else "radio broadcast"
+            )
 
             for index, fragment in enumerate(fragments, start=1):
                 delivery_info = facade.create_delivery_info(
@@ -753,16 +759,18 @@ async def on_room_message(
 
                 if queue_size > 1:
                     meshtastic_logger.info(
-                        "Relaying message from %s to radio broadcast%s "
+                        "Relaying message from %s to %s%s "
                         "(queued: %s messages)",
                         full_display_name,
+                        radio_target,
                         fragment_note,
                         queue_size,
                     )
                 else:
                     meshtastic_logger.info(
-                        "Relaying message from %s to radio broadcast%s",
+                        "Relaying message from %s to %s%s",
                         full_display_name,
+                        radio_target,
                         fragment_note,
                     )
             else:

@@ -28,6 +28,9 @@ _ICON_UPLOAD_ATTEMPTED = False
 _BOT_AVATAR_UPDATED = False
 _ROOM_AVATAR_UPDATED: set[str] = set()
 _ROOM_PROFILE_CACHE: dict[str, tuple[str, str]] = {}
+_DM_TOPIC_RE = re.compile(
+    r"^Meshtastic direct messages with (?P<name>.+?) \((?P<node>[^()\n]+)\)"
+)
 
 
 def portals_enabled(config: dict[str, Any] | None) -> bool:
@@ -59,6 +62,15 @@ def _alias_localpart(kind: str, identifier: str) -> str:
     cfg = _portal_config(facade.config)
     prefix = _slug(cfg.get("alias_prefix"), DEFAULT_PORTAL_ALIAS_PREFIX)
     return f"{prefix}-{kind}-{_slug(identifier, kind)}"
+
+
+def _alias_prefixes(config: dict[str, Any] | None) -> tuple[str, ...]:
+    cfg = _portal_config(config)
+    prefixes = [
+        _slug(cfg.get("alias_prefix"), DEFAULT_PORTAL_ALIAS_PREFIX),
+        DEFAULT_PORTAL_ALIAS_PREFIX,
+    ]
+    return tuple(dict.fromkeys(prefixes))
 
 
 def _space_alias_localpart() -> str:
@@ -598,6 +610,145 @@ def _format_dm_topic(display_name: str, node_key: str, interface: Any) -> str:
     if last_heard:
         lines.append(f"last: {last_heard}")
     return "\n".join(lines)
+
+
+def _room_aliases(room: Any) -> list[str]:
+    aliases: list[str] = []
+    for attr in ("canonical_alias", "alias"):
+        value = getattr(room, attr, None)
+        if isinstance(value, str) and value:
+            aliases.append(value)
+    value = getattr(room, "aliases", None)
+    if isinstance(value, list):
+        aliases.extend(alias for alias in value if isinstance(alias, str) and alias)
+    return aliases
+
+
+def _dm_node_key_from_alias(alias: str, config: dict[str, Any] | None) -> str | None:
+    if not alias.startswith("#"):
+        return None
+    localpart = alias[1:].split(":", 1)[0]
+    for prefix in _alias_prefixes(config):
+        marker = f"{prefix}-dm-"
+        if localpart.startswith(marker):
+            node_key = localpart[len(marker) :].strip()
+            return node_key or None
+    return None
+
+
+def _dm_room_metadata(
+    room: Any, config: dict[str, Any] | None
+) -> tuple[str | None, str | None]:
+    topic = getattr(room, "topic", None)
+    if isinstance(topic, str):
+        match = _DM_TOPIC_RE.match(topic.strip())
+        if match:
+            return match.group("node").strip(), match.group("name").strip()
+
+    for alias in _room_aliases(room):
+        node_key = _dm_node_key_from_alias(alias, config)
+        if node_key:
+            return node_key, None
+    return None, None
+
+
+def _upsert_dm_room_mapping(
+    matrix_rooms: list[Any],
+    *,
+    room_id: str,
+    node_key: str,
+    display_name: str,
+    channel: int = 0,
+) -> bool:
+    updated = False
+    destination_match: dict[str, Any] | None = None
+
+    for room in matrix_rooms:
+        if not isinstance(room, dict):
+            continue
+        if room.get("id") == room_id:
+            if room.get("meshtastic_portal_type") != "dm":
+                updated = True
+            if room.get("meshtastic_destination") != node_key:
+                updated = True
+            room["meshtastic_portal_type"] = "dm"
+            room["meshtastic_destination"] = node_key
+            room["meshtastic_node_name"] = display_name
+            room.setdefault("meshtastic_channel", channel)
+            return updated
+        if str(room.get("meshtastic_destination")) == node_key:
+            destination_match = room
+
+    if destination_match is not None:
+        if destination_match.get("id") != room_id:
+            updated = True
+        destination_match["id"] = room_id
+        destination_match["meshtastic_portal_type"] = "dm"
+        destination_match["meshtastic_node_name"] = display_name
+        destination_match.setdefault("meshtastic_channel", channel)
+        return updated
+
+    matrix_rooms.append(
+        {
+            "id": room_id,
+            "meshtastic_channel": channel,
+            "meshtastic_portal_type": "dm",
+            "meshtastic_destination": node_key,
+            "meshtastic_node_name": display_name,
+        }
+    )
+    return True
+
+
+async def restore_dm_rooms(client: Any, interface: Any, config: dict[str, Any]) -> int:
+    if not portals_enabled(config):
+        return 0
+
+    matrix_rooms = config.setdefault("matrix_rooms", [])
+    if not isinstance(matrix_rooms, list):
+        facade.logger.warning("DM room restore requires matrix_rooms to be a list")
+        return 0
+
+    rooms = getattr(client, "rooms", None)
+    if not isinstance(rooms, dict):
+        return 0
+
+    from mmrelay.meshtastic.messaging import _get_node_display_name
+
+    restored = 0
+    space_id = None
+    for room_id, room in rooms.items():
+        effective_room_id = (
+            room_id if isinstance(room_id, str) else getattr(room, "room_id", None)
+        )
+        if not isinstance(effective_room_id, str) or not effective_room_id:
+            continue
+
+        node_key, topic_name = _dm_room_metadata(room, config)
+        if not node_key:
+            continue
+
+        display_name = _get_node_display_name(
+            node_key,
+            interface,
+            fallback=topic_name or node_key,
+        )
+        if _upsert_dm_room_mapping(
+            matrix_rooms,
+            room_id=effective_room_id,
+            node_key=node_key,
+            display_name=display_name,
+        ):
+            restored += 1
+
+        await ensure_dm_room(client, interface, node_key, create=False)
+        if space_id is None:
+            space_id = await ensure_portal_space(client)
+        await _add_space_child(client, space_id, effective_room_id)
+
+    if restored:
+        facade.logger.info("Restored %s Matrix DM room mapping(s)", restored)
+    return restored
 
 
 async def ensure_channel_rooms(client: Any, interface: Any, config: dict[str, Any]) -> None:

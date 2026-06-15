@@ -11,11 +11,13 @@ from mmrelay.matrix.portals import (
     ensure_control_room,
     ensure_dm_room,
     portals_enabled,
+    restore_dm_rooms,
 )
 
 
 class FakeClient:
     def __init__(self) -> None:
+        self.rooms: dict[str, SimpleNamespace] = {}
         self.created: list[dict] = []
         self.children: list[tuple[str, str]] = []
         self.invites: list[tuple[str, str]] = []
@@ -380,3 +382,46 @@ async def test_ensure_dm_room_create_false_updates_existing_only(monkeypatch) ->
     assert missing is None
     assert len(client.created) == 0
     assert config["matrix_rooms"][0]["meshtastic_node_name"] == "NEW"
+
+
+@pytest.mark.asyncio
+async def test_restore_dm_rooms_rebuilds_mapping_from_joined_room_topic(
+    monkeypatch,
+) -> None:
+    client = FakeClient()
+    client.rooms = {
+        "!dm:example.org": SimpleNamespace(
+            room_id="!dm:example.org",
+            topic="Meshtastic direct messages with OLD (!abc)",
+            canonical_alias="#meshtastic-dm-abc:example.org",
+        )
+    }
+    config = {
+        "matrix_rooms": [],
+        "meshtastic_portals": {"enabled": True},
+    }
+    interface = SimpleNamespace(
+        nodes={
+            "!abc": {
+                "user": {"shortName": "NEW", "longName": "New Node"},
+            }
+        }
+    )
+    monkeypatch.setattr(facade, "config", config)
+    monkeypatch.setattr(facade, "bot_user_id", "@meshtasticbot:example.org")
+    monkeypatch.setattr(facade, "join_matrix_room", AsyncMock())
+
+    restored = await restore_dm_rooms(client, interface, config)
+
+    assert restored == 1
+    assert config["matrix_rooms"] == [
+        {
+            "id": "!dm:example.org",
+            "meshtastic_channel": 0,
+            "meshtastic_portal_type": "dm",
+            "meshtastic_destination": "!abc",
+            "meshtastic_node_name": "NEW",
+        }
+    ]
+    assert ("!dm:example.org", "m.room.name", "", {"name": "DM NEW"}) in client.state
+    assert ("!room1:example.org", "!dm:example.org") in client.children

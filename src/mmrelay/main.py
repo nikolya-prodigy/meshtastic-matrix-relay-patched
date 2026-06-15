@@ -755,6 +755,11 @@ async def main(config: dict[str, Any]) -> None:
 
         if matrix_utils.portals_enabled(config):
             await matrix_utils.ensure_bot_avatar(matrix_client)
+            await matrix_utils.restore_dm_rooms(
+                matrix_client,
+                meshtastic_utils.meshtastic_client,
+                config,
+            )
             await matrix_utils.ensure_channel_rooms(
                 matrix_client,
                 meshtastic_utils.meshtastic_client,

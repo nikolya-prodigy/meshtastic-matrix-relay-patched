@@ -347,6 +347,7 @@ from mmrelay.matrix.portals import (
     ensure_dm_room,
     ensure_portal_space,
     portals_enabled,
+    restore_dm_rooms,
 )
 from mmrelay.matrix.control import (
     commands_allowed_in_portal_rooms,

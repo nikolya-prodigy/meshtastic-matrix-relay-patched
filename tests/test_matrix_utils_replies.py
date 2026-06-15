@@ -389,6 +389,84 @@ async def test_send_reply_to_meshtastic_no_reply_id():
 
 
 @pytest.mark.asyncio
+async def test_send_reply_to_meshtastic_structured_reply_preserves_dm_destination():
+    mock_room_config = {
+        "meshtastic_channel": 0,
+        "meshtastic_destination": "!abc",
+    }
+    mock_room = MagicMock()
+    mock_event = MagicMock()
+
+    real_loop = asyncio.get_running_loop()
+
+    with (
+        patch(
+            "mmrelay.matrix_utils.config", {"meshtastic": {"broadcast_enabled": True}}
+        ),
+        patch(
+            "mmrelay.matrix_utils.asyncio.get_running_loop",
+            return_value=DummyLoop(real_loop),
+        ),
+        patch("mmrelay.matrix_utils.connect_meshtastic", return_value=MagicMock()),
+        patch("mmrelay.matrix_utils.queue_message", return_value=True) as mock_queue,
+    ):
+        await send_reply_to_meshtastic(
+            reply_message="Test reply",
+            full_display_name="Alice",
+            room_config=mock_room_config,
+            room=mock_room,
+            event=mock_event,
+            text="Original text",
+            storage_enabled=False,
+            local_meshnet_name="TestMesh",
+            reply_id=12345,
+        )
+
+        call_kwargs = mock_queue.call_args.kwargs
+        assert call_kwargs["destinationId"] == "!abc"
+        assert call_kwargs["wantAck"] is True
+
+
+@pytest.mark.asyncio
+async def test_send_reply_to_meshtastic_fallback_preserves_dm_destination():
+    mock_room_config = {
+        "meshtastic_channel": 0,
+        "meshtastic_destination": "!abc",
+    }
+    mock_room = MagicMock()
+    mock_event = MagicMock()
+
+    real_loop = asyncio.get_running_loop()
+
+    with (
+        patch(
+            "mmrelay.matrix_utils.config", {"meshtastic": {"broadcast_enabled": True}}
+        ),
+        patch(
+            "mmrelay.matrix_utils.asyncio.get_running_loop",
+            return_value=DummyLoop(real_loop),
+        ),
+        patch("mmrelay.matrix_utils.connect_meshtastic", return_value=MagicMock()),
+        patch("mmrelay.matrix_utils.queue_message", return_value=True) as mock_queue,
+    ):
+        await send_reply_to_meshtastic(
+            reply_message="Test reply",
+            full_display_name="Alice",
+            room_config=mock_room_config,
+            room=mock_room,
+            event=mock_event,
+            text="Original text",
+            storage_enabled=False,
+            local_meshnet_name="TestMesh",
+            reply_id=None,
+        )
+
+        call_kwargs = mock_queue.call_args.kwargs
+        assert call_kwargs["destinationId"] == "!abc"
+        assert call_kwargs["wantAck"] is True
+
+
+@pytest.mark.asyncio
 async def test_send_reply_to_meshtastic_returns_when_interface_missing(monkeypatch):
     """Return early when the Meshtastic interface cannot be obtained."""
     monkeypatch.setattr(

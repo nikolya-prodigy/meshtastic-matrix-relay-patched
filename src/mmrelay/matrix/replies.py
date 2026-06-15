@@ -26,6 +26,23 @@ __all__ = [
 ]
 
 
+def _meshtastic_destination_kwargs(room_config: dict[str, Any]) -> dict[str, Any]:
+    destination = room_config.get("meshtastic_destination")
+    if destination in (None, ""):
+        return {}
+    kwargs: dict[str, Any] = {"destinationId": destination}
+    if room_config.get("meshtastic_want_ack", True):
+        kwargs["wantAck"] = True
+    return kwargs
+
+
+def _radio_target(send_kwargs: dict[str, Any]) -> str:
+    destination = send_kwargs.get("destinationId")
+    if destination in (None, ""):
+        return "radio broadcast"
+    return f"radio direct {destination}"
+
+
 def truncate_message(
     text: str, max_bytes: int = facade.DEFAULT_MESSAGE_TRUNCATE_BYTES
 ) -> str:
@@ -278,6 +295,8 @@ async def send_reply_to_meshtastic(
 
         if reply_id is not None:
             success = True
+            destination_kwargs = _meshtastic_destination_kwargs(room_config)
+            target = _radio_target(destination_kwargs)
             for index, fragment in enumerate(fragments, start=1):
                 delivery_info = facade.create_delivery_info(
                     room.room_id,
@@ -295,7 +314,9 @@ async def send_reply_to_meshtastic(
                     if storage_enabled
                     else None
                 )
-                send_kwargs = facade.apply_delivery_ack_kwargs({}, delivery_info)
+                send_kwargs = facade.apply_delivery_ack_kwargs(
+                    destination_kwargs.copy(), delivery_info
+                )
                 description = f"Reply from {full_display_name} to message {reply_id}"
                 if total_fragments > 1:
                     description += f" (fragment {index}/{total_fragments})"
@@ -324,17 +345,19 @@ async def send_reply_to_meshtastic(
 
                 if queue_size > 1:
                     meshtastic_logger.info(
-                        "Relaying Matrix reply from %s to radio broadcast "
+                        "Relaying Matrix reply from %s to %s "
                         "as structured reply%s (queued: %s messages)",
                         full_display_name,
+                        target,
                         fragment_note,
                         queue_size,
                     )
                 else:
                     meshtastic_logger.info(
-                        "Relaying Matrix reply from %s to radio broadcast "
+                        "Relaying Matrix reply from %s to %s "
                         "as structured reply%s",
                         full_display_name,
+                        target,
                         fragment_note,
                     )
                 return True
@@ -345,6 +368,8 @@ async def send_reply_to_meshtastic(
                 return False
         else:
             success = True
+            destination_kwargs = _meshtastic_destination_kwargs(room_config)
+            target = _radio_target(destination_kwargs)
             for index, fragment in enumerate(fragments, start=1):
                 delivery_info = facade.create_delivery_info(
                     room.room_id,
@@ -362,7 +387,9 @@ async def send_reply_to_meshtastic(
                     if storage_enabled
                     else None
                 )
-                send_kwargs = facade.apply_delivery_ack_kwargs({}, delivery_info)
+                send_kwargs = facade.apply_delivery_ack_kwargs(
+                    destination_kwargs.copy(), delivery_info
+                )
                 description = f"Reply from {full_display_name}"
                 if total_fragments > 1:
                     description += f" (fragment {index}/{total_fragments})"
@@ -389,16 +416,18 @@ async def send_reply_to_meshtastic(
 
                 if queue_size > 1:
                     meshtastic_logger.info(
-                        "Relaying Matrix reply from %s to radio broadcast%s "
+                        "Relaying Matrix reply from %s to %s%s "
                         "(queued: %s messages)",
                         full_display_name,
+                        target,
                         fragment_note,
                         queue_size,
                     )
                 else:
                     meshtastic_logger.info(
-                        "Relaying Matrix reply from %s to radio broadcast%s",
+                        "Relaying Matrix reply from %s to %s%s",
                         full_display_name,
+                        target,
                         fragment_note,
                     )
                 return True
@@ -495,11 +524,16 @@ async def handle_matrix_reply(
 
     if original_meshtastic_id is not None:
         facade.logger.info(
-            f"Relaying Matrix reply from {full_display_name} to Meshtastic as reply to message {original_meshtastic_id}"
+            "Relaying Matrix reply from %s to Meshtastic as reply to message %s",
+            full_display_name,
+            original_meshtastic_id,
         )
     else:
+        target = _radio_target(_meshtastic_destination_kwargs(room_config))
         facade.logger.info(
-            f"Relaying Matrix reply from {full_display_name} to Meshtastic as broadcast reply"
+            "Relaying Matrix reply from %s to Meshtastic as %s reply",
+            full_display_name,
+            target,
         )
 
     return await facade.send_reply_to_meshtastic(
