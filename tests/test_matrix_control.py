@@ -29,7 +29,9 @@ def _interface() -> SimpleNamespace:
         sendText=MagicMock(),
         sendTraceRoute=MagicMock(),
         sendTelemetry=MagicMock(),
+        _send_data_with_wait=MagicMock(return_value=SimpleNamespace(id=1234)),
         localNode=SimpleNamespace(
+            nodeNum=1,
             channels=[
                 SimpleNamespace(
                     role="PRIMARY",
@@ -157,7 +159,8 @@ async def test_nodes_command_builds_stable_numbered_cache(monkeypatch) -> None:
     assert "id: !new" not in sent[0]
     assert "model:" not in sent[0]
     assert "battery:" not in sent[0]
-    assert "link:" not in sent[0]
+    assert "link: 1 hop away, snr: -7.5 dB" in sent[0]
+    assert "last:" in sent[0]
     assert "OLD Old Node" not in sent[0]
 
     entry = control._NODE_INDEX_CACHE[("!control:example.org", "@nikolya:example.org")][0]
@@ -301,7 +304,8 @@ async def test_find_command_searches_and_renumbers_cache(monkeypatch) -> None:
     assert "id: !old" not in sent[-1]
     assert "model:" not in sent[-1]
     assert "battery:" not in sent[-1]
-    assert "link:" not in sent[-1]
+    assert "link:" in sent[-1]
+    assert "last:" in sent[-1]
 
     entry = control._NODE_INDEX_CACHE[("!control:example.org", "@nikolya:example.org")][0]
     assert entry.number == 1
@@ -486,13 +490,9 @@ async def test_telemetry_command_requests_environment_metrics(monkeypatch) -> No
     sent = _capture_messages(monkeypatch)
     interface = _interface()
 
-    def schedule(_room_id, _title, _iface, _timeout, action, _request_key=None):
-        action()
-        return True
-
-    scheduled = MagicMock(side_effect=schedule)
+    scheduled = MagicMock(return_value=True)
     monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
-    monkeypatch.setattr(control, "_schedule_meshtastic_summary_result", scheduled)
+    monkeypatch.setattr(control, "_schedule_telemetry_result", scheduled)
 
     await control.handle_control_room_message(_room(), _event("nodes"))
     handled = await control.handle_control_room_message(
@@ -501,14 +501,49 @@ async def test_telemetry_command_requests_environment_metrics(monkeypatch) -> No
     )
 
     assert handled is True
-    interface.sendTelemetry.assert_called_once_with(
-        destinationId="!new",
-        wantResponse=True,
-        channelIndex=0,
-        telemetryType="environment_metrics",
+    interface.sendTelemetry.assert_not_called()
+    scheduled.assert_called_once_with(
+        "!control:example.org",
+        "Telemetry for NEW New Node",
+        interface,
+        "!new",
+        "environment_metrics",
+        ("telemetry", "!control:example.org", "!new", "environment_metrics"),
     )
-    scheduled.assert_called_once()
     assert "Requesting telemetry from NEW New Node..." in sent[-1]
+
+
+def test_telemetry_response_packet_formats_decoded_metrics() -> None:
+    lines = control._format_telemetry_response_packet(
+        {
+            "fromId": "!new",
+            "decoded": {
+                "portnum": "TELEMETRY_APP",
+                "telemetry": {
+                    "deviceMetrics": {
+                        "batteryLevel": 95,
+                        "voltage": 4.1,
+                        "airUtilTx": 1.25,
+                        "uptimeSeconds": 125,
+                    },
+                    "environmentMetrics": {
+                        "temperature": 23.44,
+                        "relativeHumidity": 55.2,
+                        "barometricPressure": 1012.8,
+                    },
+                },
+            },
+        }
+    )
+
+    assert "Telemetry received:" in lines
+    assert "Battery level: 95%" in lines
+    assert "Voltage: 4.10 V" in lines
+    assert "Transmit air utilization: 1.25%" in lines
+    assert "Uptime: 2m 5s" in lines
+    assert "Temperature: 23.4 C" in lines
+    assert "Humidity: 55%" in lines
+    assert "Pressure: 1012.8 hPa" in lines
 
 
 @pytest.mark.asyncio
@@ -798,11 +833,11 @@ async def test_send_control_help_bolds_command_names(monkeypatch) -> None:
     content = client.room_send.await_args.kwargs["content"]
     assert content["body"] == control.CONTROL_HELP
     assert (
-        "<strong>nodes [online|limit|all]</strong> - List known Meshtastic nodes"
+        "<li><strong>nodes [online|limit|all]</strong> - List known Meshtastic nodes</li>"
         in content["formatted_body"]
     )
     assert (
-        "<strong>telemetry &lt;number|node-id|name&gt; "
+        "<li><strong>telemetry &lt;number|node-id|name&gt; "
         "[device|environment|air|power|local]</strong>"
         in content["formatted_body"]
     )

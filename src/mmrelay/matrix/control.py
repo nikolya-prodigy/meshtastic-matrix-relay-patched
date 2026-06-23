@@ -175,16 +175,28 @@ def _control_help_to_html(message: str) -> str:
         if " - " in line
     }
     lines: list[str] = []
+    in_command_list = False
     for line in message.splitlines():
         command_text, separator, description = line.partition(" - ")
         command_name = command_text.split(maxsplit=1)[0] if command_text else ""
         if separator and command_name in command_names:
+            if not in_command_list:
+                lines.append("<ul>")
+                in_command_list = True
             lines.append(
-                f"<strong>{html.escape(command_text)}</strong>"
-                f" - {html.escape(description)}"
+                f"<li><strong>{html.escape(command_text)}</strong>"
+                f" - {html.escape(description)}</li>"
             )
             continue
-        lines.append(html.escape(line))
+        if in_command_list:
+            lines.append("</ul>")
+            in_command_list = False
+        if line == "Commands:":
+            lines.append("<strong>Commands:</strong>")
+        else:
+            lines.append(html.escape(line).replace("\n", "<br>"))
+    if in_command_list:
+        lines.append("</ul>")
     return "<br>".join(lines)
 
 
@@ -501,7 +513,11 @@ def _channel_brief(channel: dict[str, Any]) -> str:
 
 
 def _entry_brief(entry: NodeEntry) -> str:
-    return f"{entry.number}. {entry.title}"
+    return (
+        f"{entry.number}. {entry.title}\n"
+        f"   link: {entry.hops}, snr: {entry.snr}\n"
+        f"   last: {entry.last_heard}"
+    )
 
 
 def _entry_detail(entry: NodeEntry) -> str:
@@ -659,6 +675,22 @@ async def _send_trace_route_result(
     await send_control_message(room_id, _format_meshtastic_summary(title, lines, error))
 
 
+async def _send_telemetry_result(
+    room_id: str,
+    title: str,
+    interface: Any,
+    destination_id: str,
+    telemetry_type: str,
+) -> None:
+    lines, error = await asyncio.to_thread(
+        _run_telemetry_request,
+        interface,
+        destination_id,
+        telemetry_type,
+    )
+    await send_control_message(room_id, _format_meshtastic_summary(title, lines, error))
+
+
 def _schedule_meshtastic_summary_result(
     room_id: str,
     title: str,
@@ -689,6 +721,39 @@ def _schedule_meshtastic_summary_result(
             done.result()
         except Exception:  # noqa: BLE001 - keep Matrix sync loop alive
             facade.logger.exception("Meshtastic control background request failed")
+
+    task.add_done_callback(_log_background_error)
+    return True
+
+
+def _schedule_telemetry_result(
+    room_id: str,
+    title: str,
+    interface: Any,
+    destination_id: str,
+    telemetry_type: str,
+    request_key: tuple[str, ...],
+) -> bool:
+    if request_key in _CONTROL_BACKGROUND_REQUESTS:
+        return False
+    _CONTROL_BACKGROUND_REQUESTS.add(request_key)
+
+    task = asyncio.create_task(
+        _send_telemetry_result(
+            room_id,
+            title,
+            interface,
+            destination_id,
+            telemetry_type,
+        )
+    )
+
+    def _log_background_error(done: asyncio.Task[None]) -> None:
+        _CONTROL_BACKGROUND_REQUESTS.discard(request_key)
+        try:
+            done.result()
+        except Exception:  # noqa: BLE001 - keep Matrix sync loop alive
+            facade.logger.exception("Meshtastic telemetry request failed")
 
     task.add_done_callback(_log_background_error)
     return True
@@ -843,6 +908,299 @@ def _run_trace_route_request(
         return [], response_error
     _mark_trace_wait_finished(trace_interface, WAIT_ATTR_TRACEROUTE, sent_request_id)
     return _format_trace_route_packet(interface, response_packet), response_error
+
+
+def _build_telemetry_payload(telemetry_type: str, interface: Any) -> Any:
+    from meshtastic.protobuf import telemetry_pb2
+
+    payload = telemetry_pb2.Telemetry()
+    if telemetry_type == "environment_metrics":
+        payload.environment_metrics.CopyFrom(telemetry_pb2.EnvironmentMetrics())
+    elif telemetry_type == "air_quality_metrics":
+        payload.air_quality_metrics.CopyFrom(telemetry_pb2.AirQualityMetrics())
+    elif telemetry_type == "power_metrics":
+        payload.power_metrics.CopyFrom(telemetry_pb2.PowerMetrics())
+    elif telemetry_type == "local_stats":
+        payload.local_stats.CopyFrom(telemetry_pb2.LocalStats())
+    else:
+        payload.device_metrics.CopyFrom(telemetry_pb2.DeviceMetrics())
+        local_node = getattr(interface, "localNode", None)
+        node_num = getattr(local_node, "nodeNum", None)
+        nodes_by_num = getattr(interface, "nodesByNum", None)
+        node = nodes_by_num.get(node_num) if isinstance(nodes_by_num, dict) else None
+        metrics = node.get("deviceMetrics") if isinstance(node, dict) else None
+        if isinstance(metrics, dict):
+            if metrics.get("batteryLevel") is not None:
+                payload.device_metrics.battery_level = metrics["batteryLevel"]
+            if metrics.get("voltage") is not None:
+                payload.device_metrics.voltage = metrics["voltage"]
+            if metrics.get("channelUtilization") is not None:
+                payload.device_metrics.channel_utilization = metrics[
+                    "channelUtilization"
+                ]
+            if metrics.get("airUtilTx") is not None:
+                payload.device_metrics.air_util_tx = metrics["airUtilTx"]
+            if metrics.get("uptimeSeconds") is not None:
+                payload.device_metrics.uptime_seconds = metrics["uptimeSeconds"]
+    return payload
+
+
+def _identifier_candidates(value: Any) -> set[str]:
+    if value in (None, ""):
+        return set()
+    candidates = {str(value)}
+    text = str(value)
+    candidates.add(text.lstrip("!"))
+    try:
+        number = int(text.lstrip("!"), 16) if text.startswith("!") else int(text)
+    except (TypeError, ValueError):
+        return {candidate.casefold() for candidate in candidates}
+    candidates.add(str(number))
+    candidates.add(f"{number:08x}")
+    candidates.add(f"!{number:08x}")
+    return {candidate.casefold() for candidate in candidates}
+
+
+def _telemetry_packet_from_destination(
+    packet: dict[str, Any],
+    destination_id: str,
+) -> bool:
+    packet_candidates: set[str] = set()
+    for key in ("fromId", "from", "from_id"):
+        packet_candidates.update(_identifier_candidates(packet.get(key)))
+    if not packet_candidates:
+        return False
+    return bool(packet_candidates & _identifier_candidates(destination_id))
+
+
+def _is_telemetry_response_packet(packet: dict[str, Any], portnums_pb2: Any) -> bool:
+    decoded = packet.get("decoded", {})
+    if not isinstance(decoded, dict):
+        return False
+    portnum = decoded.get("portnum")
+    telemetry_port_name = portnums_pb2.PortNum.Name(portnums_pb2.PortNum.TELEMETRY_APP)
+    return portnum in (telemetry_port_name, portnums_pb2.PortNum.TELEMETRY_APP)
+
+
+def _is_routing_error_packet(packet: dict[str, Any], portnums_pb2: Any) -> bool:
+    decoded = packet.get("decoded", {})
+    if not isinstance(decoded, dict):
+        return False
+    routing_port_name = portnums_pb2.PortNum.Name(portnums_pb2.PortNum.ROUTING_APP)
+    if decoded.get("portnum") not in (
+        routing_port_name,
+        portnums_pb2.PortNum.ROUTING_APP,
+    ):
+        return False
+    routing = decoded.get("routing")
+    if not isinstance(routing, dict):
+        return False
+    error_reason = routing.get("errorReason")
+    return error_reason is not None and error_reason != "NONE"
+
+
+def _routing_error_message(decoded: dict[str, Any]) -> str:
+    routing = decoded.get("routing")
+    if not isinstance(routing, dict):
+        return "routing error"
+    reason = routing.get("errorReason")
+    return f"routing error: {reason}" if reason else "routing error"
+
+
+def _run_telemetry_request(
+    interface: Any,
+    destination_id: str,
+    telemetry_type: str,
+) -> tuple[list[str], str | None]:
+    try:
+        from meshtastic.protobuf import portnums_pb2
+        from pubsub import pub
+        from pubsub.core.topicexc import TopicNameError
+    except Exception as exc:  # noqa: BLE001 - dependency/runtime problem
+        return [], f"Telemetry support is unavailable: {exc}"
+
+    send_data_with_wait = getattr(interface, "_send_data_with_wait", None)
+    if not callable(send_data_with_wait):
+        return [], "Telemetry requests are not supported by this Meshtastic API."
+
+    response_packet: dict[str, Any] | None = None
+    response_error: str | None = None
+    response_event = threading.Event()
+    sent_request_id: int | None = None
+    telemetry_interface = interface
+
+    def on_packet(packet: dict[str, Any], interface: Any | None = None) -> None:
+        nonlocal response_packet, response_error
+        if not isinstance(packet, dict):
+            return
+        if interface is not None and id(interface) != id(telemetry_interface):
+            return
+        decoded = packet.get("decoded", {})
+        if not isinstance(decoded, dict):
+            return
+
+        request_id = _extract_request_id_from_packet(telemetry_interface, packet)
+        if request_id is not None and sent_request_id is not None:
+            if request_id != sent_request_id:
+                return
+
+        if _is_routing_error_packet(packet, portnums_pb2):
+            response_error = _routing_error_message(decoded)
+            response_event.set()
+            return
+
+        if not _is_telemetry_response_packet(packet, portnums_pb2):
+            return
+        if not _telemetry_packet_from_destination(packet, destination_id):
+            return
+        response_packet = packet
+        response_event.set()
+
+    try:
+        pub.subscribe(on_packet, "meshtastic.receive")
+        sent_packet = send_data_with_wait(
+            _build_telemetry_payload(telemetry_type, interface),
+            destinationId=destination_id,
+            portNum=portnums_pb2.PortNum.TELEMETRY_APP,
+            wantResponse=True,
+            channelIndex=0,
+            hopLimit=_trace_hop_limit(interface),
+        )
+        sent_request_id = _extract_request_id_from_sent_packet(
+            telemetry_interface,
+            sent_packet,
+        )
+        response_event.wait(TELEMETRY_TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - surface API failures to Matrix
+        if response_packet is None:
+            return [], response_error or str(exc) or exc.__class__.__name__
+    finally:
+        try:
+            pub.unsubscribe(on_packet, "meshtastic.receive")
+        except TopicNameError:
+            pass
+        except Exception:
+            facade.logger.debug(
+                "Failed to unsubscribe telemetry listener",
+                exc_info=True,
+            )
+
+    if response_packet is None:
+        return [], response_error or "Timed out waiting for telemetry"
+    return _format_telemetry_response_packet(response_packet), response_error
+
+
+def _telemetry_dict_from_packet(packet: dict[str, Any]) -> dict[str, Any] | None:
+    decoded = packet.get("decoded", {})
+    if not isinstance(decoded, dict):
+        return None
+    telemetry = decoded.get("telemetry")
+    if isinstance(telemetry, dict):
+        return telemetry
+
+    payload = decoded.get("payload")
+    if payload is None:
+        return None
+    try:
+        from google.protobuf.json_format import MessageToDict
+        from google.protobuf.message import DecodeError
+        from meshtastic.protobuf import telemetry_pb2
+    except Exception:  # noqa: BLE001 - dependency/runtime problem
+        return None
+
+    parsed = telemetry_pb2.Telemetry()
+    try:
+        parsed.ParseFromString(payload)
+    except (DecodeError, TypeError):
+        return None
+    return MessageToDict(parsed)
+
+
+def _format_float_metric(
+    metrics: dict[str, Any],
+    key: str,
+    label: str,
+    suffix: str = "",
+    digits: int = 2,
+) -> str | None:
+    value = metrics.get(key)
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return f"{label}: {value}{suffix}"
+    return f"{label}: {number:.{digits}f}{suffix}"
+
+
+def _format_telemetry_response_packet(packet: dict[str, Any]) -> list[str]:
+    telemetry = _telemetry_dict_from_packet(packet)
+    if not telemetry:
+        return ["Telemetry response received, but no telemetry fields were decoded."]
+
+    lines = ["Telemetry received:"]
+    device_metrics = telemetry.get("deviceMetrics")
+    if isinstance(device_metrics, dict):
+        if device_metrics.get("batteryLevel") is not None:
+            lines.append(f"Battery level: {device_metrics['batteryLevel']}%")
+        if line := _format_float_metric(device_metrics, "voltage", "Voltage", " V"):
+            lines.append(line)
+        if line := _format_float_metric(
+            device_metrics,
+            "channelUtilization",
+            "Channel utilization",
+            "%",
+        ):
+            lines.append(line)
+        if line := _format_float_metric(
+            device_metrics,
+            "airUtilTx",
+            "Transmit air utilization",
+            "%",
+        ):
+            lines.append(line)
+        if device_metrics.get("uptimeSeconds") is not None:
+            lines.append(f"Uptime: {_duration(device_metrics['uptimeSeconds'])}")
+
+    environment_metrics = telemetry.get("environmentMetrics")
+    if isinstance(environment_metrics, dict):
+        if line := _format_float_metric(
+            environment_metrics,
+            "temperature",
+            "Temperature",
+            " C",
+            digits=1,
+        ):
+            lines.append(line)
+        if environment_metrics.get("relativeHumidity") is not None:
+            try:
+                humidity = round(float(environment_metrics["relativeHumidity"]))
+            except (TypeError, ValueError, OverflowError):
+                humidity = environment_metrics["relativeHumidity"]
+            lines.append(f"Humidity: {humidity}%")
+        if line := _format_float_metric(
+            environment_metrics,
+            "barometricPressure",
+            "Pressure",
+            " hPa",
+            digits=1,
+        ):
+            lines.append(line)
+        if line := _format_float_metric(environment_metrics, "gasResistance", "Gas"):
+            lines.append(line)
+        if environment_metrics.get("iaq") is not None:
+            lines.append(f"IAQ: {environment_metrics['iaq']}")
+
+    for key in ("airQualityMetrics", "powerMetrics", "localStats"):
+        metrics = telemetry.get(key)
+        if isinstance(metrics, dict):
+            label = re.sub(r"(?<!^)(?=[A-Z])", " ", key).title()
+            lines.append(f"{label}:")
+            for metric_key, value in metrics.items():
+                metric_label = re.sub(r"(?<!^)(?=[A-Z])", " ", metric_key).lower()
+                lines.append(f"  {metric_label}: {value}")
+
+    return lines
 
 
 def _trace_packet_rank(packet: dict[str, Any]) -> tuple[int, int, int]:
@@ -1497,8 +1855,11 @@ async def _handle_telemetry_command(room: Any, event: Any, args: str) -> bool:
             "Usage: telemetry <number|node-id|name> [device|environment|air|power|local]",
         )
         return True
-    if not callable(getattr(interface, "sendTelemetry", None)):
-        await send_control_message(room.room_id, "Telemetry requests are not supported by this Meshtastic API.")
+    if not callable(getattr(interface, "_send_data_with_wait", None)):
+        await send_control_message(
+            room.room_id,
+            "Telemetry requests are not supported by this Meshtastic API.",
+        )
         return True
 
     await send_control_message(
@@ -1506,24 +1867,19 @@ async def _handle_telemetry_command(room: Any, event: Any, args: str) -> bool:
         f"Requesting telemetry from {entry.title}... I will post the result here.",
     )
 
-    def _action() -> None:
-        interface.sendTelemetry(
-            destinationId=entry.node_id,
-            wantResponse=True,
-            channelIndex=0,
-            telemetryType=telemetry_type,
-        )
-
-    scheduled = _schedule_meshtastic_summary_result(
+    scheduled = _schedule_telemetry_result(
         room.room_id,
         f"Telemetry for {entry.title}",
         interface,
-        TELEMETRY_TIMEOUT_SECONDS,
-        _action,
+        entry.node_id,
+        telemetry_type,
         ("telemetry", room.room_id, entry.node_id, telemetry_type),
     )
     if not scheduled:
-        await send_control_message(room.room_id, f"Telemetry request for {entry.title} is already running.")
+        await send_control_message(
+            room.room_id,
+            f"Telemetry request for {entry.title} is already running.",
+        )
     return True
 
 
