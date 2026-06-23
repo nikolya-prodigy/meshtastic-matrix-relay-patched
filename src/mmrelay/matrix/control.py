@@ -163,7 +163,29 @@ async def _send_control_reaction(room: Any, event: Any, emoji: str) -> None:
 
 
 def _plain_text_to_html(message: str) -> str:
+    if message == CONTROL_HELP:
+        return _control_help_to_html(message)
     return html.escape(message).replace("\n", "<br>")
+
+
+def _control_help_to_html(message: str) -> str:
+    command_names = {
+        line.partition(" - ")[0].split(maxsplit=1)[0]
+        for line in CONTROL_HELP.splitlines()
+        if " - " in line
+    }
+    lines: list[str] = []
+    for line in message.splitlines():
+        command_text, separator, description = line.partition(" - ")
+        command_name = command_text.split(maxsplit=1)[0] if command_text else ""
+        if separator and command_name in command_names:
+            lines.append(
+                f"<strong>{html.escape(command_text)}</strong>"
+                f" - {html.escape(description)}"
+            )
+            continue
+        lines.append(html.escape(line))
+    return "<br>".join(lines)
 
 
 def _message_body(event: Any) -> str:
@@ -479,6 +501,10 @@ def _channel_brief(channel: dict[str, Any]) -> str:
 
 
 def _entry_brief(entry: NodeEntry) -> str:
+    return f"{entry.number}. {entry.title}"
+
+
+def _entry_detail(entry: NodeEntry) -> str:
     return (
         f"{entry.number}. {entry.title}\n"
         f"   id: {entry.node_id}\n"
@@ -1403,7 +1429,7 @@ async def _handle_node_command(room: Any, event: Any, args: str) -> bool:
             "Node not found. Run `nodes` or `find <query>`, then use `node <number>`.",
         )
         return True
-    await send_control_message(room.room_id, _entry_brief(entry))
+    await send_control_message(room.room_id, _entry_detail(entry))
     return True
 
 

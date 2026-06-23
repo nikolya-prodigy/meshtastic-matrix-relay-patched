@@ -154,6 +154,10 @@ async def test_nodes_command_builds_stable_numbered_cache(monkeypatch) -> None:
     reaction.assert_awaited_once_with("!control:example.org", "$event", "✅")
     assert "Nodes: 2 / Online 1, showing 1 of 2" in sent[0]
     assert "1. NEW New Node" in sent[0]
+    assert "id: !new" not in sent[0]
+    assert "model:" not in sent[0]
+    assert "battery:" not in sent[0]
+    assert "link:" not in sent[0]
     assert "OLD Old Node" not in sent[0]
 
     entry = control._NODE_INDEX_CACHE[("!control:example.org", "@nikolya:example.org")][0]
@@ -294,6 +298,10 @@ async def test_find_command_searches_and_renumbers_cache(monkeypatch) -> None:
     assert handled is True
     assert "Found nodes: 1" in sent[-1]
     assert "1. OLD Old Node" in sent[-1]
+    assert "id: !old" not in sent[-1]
+    assert "model:" not in sent[-1]
+    assert "battery:" not in sent[-1]
+    assert "link:" not in sent[-1]
 
     entry = control._NODE_INDEX_CACHE[("!control:example.org", "@nikolya:example.org")][0]
     assert entry.number == 1
@@ -309,6 +317,9 @@ async def test_node_command_accepts_node_id_without_cached_nodes(monkeypatch) ->
     assert handled is True
     assert "NEW New Node" in sent[-1]
     assert "id: !new" in sent[-1]
+    assert "model: HELTEC_V4" in sent[-1]
+    assert "battery: 95% 4.1V" in sent[-1]
+    assert "link: 1 hop away, snr: -7.5 dB" in sent[-1]
 
 
 @pytest.mark.asyncio
@@ -775,3 +786,23 @@ async def test_send_control_message_includes_html_body(monkeypatch) -> None:
     assert content["body"] == "1. <node>\nid: `!abc`"
     assert content["format"] == "org.matrix.custom.html"
     assert content["formatted_body"] == "1. &lt;node&gt;<br>id: `!abc`"
+
+
+@pytest.mark.asyncio
+async def test_send_control_help_bolds_command_names(monkeypatch) -> None:
+    client = SimpleNamespace(room_send=AsyncMock())
+    monkeypatch.setattr(facade, "matrix_client", client)
+
+    await control.send_control_message("!control", control.CONTROL_HELP)
+
+    content = client.room_send.await_args.kwargs["content"]
+    assert content["body"] == control.CONTROL_HELP
+    assert (
+        "<strong>nodes [online|limit|all]</strong> - List known Meshtastic nodes"
+        in content["formatted_body"]
+    )
+    assert (
+        "<strong>telemetry &lt;number|node-id|name&gt; "
+        "[device|environment|air|power|local]</strong>"
+        in content["formatted_body"]
+    )

@@ -310,10 +310,10 @@ class TestHelpPlugin(unittest.TestCase):
             # Should contain all available commands
             message = call_args[0][1]
             self.assertIn(MSG_AVAILABLE_COMMANDS_PREFIX, message)
-            self.assertIn("nodes", message)
-            self.assertIn("health", message)
-            self.assertIn("map", message)
-            self.assertIn("help", message)
+            self.assertIn("**nodes**", message)
+            self.assertIn("**health**", message)
+            self.assertIn("**map**", message)
+            self.assertIn("**help**", message)
 
         asyncio.run(run_test())
 

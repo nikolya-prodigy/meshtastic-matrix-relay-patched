@@ -126,7 +126,9 @@ class Plugin(BasePlugin):
             commands = [
                 cmd for plugin in plugins for cmd in plugin.get_matrix_commands()
             ]
-            reply = MSG_AVAILABLE_COMMANDS_PREFIX + ", ".join(sorted(set(commands)))
+            reply = MSG_AVAILABLE_COMMANDS_PREFIX + ", ".join(
+                f"**{cmd}**" for cmd in sorted(set(commands))
+            )
 
         try:
             await self.send_matrix_message(room.room_id, reply)
