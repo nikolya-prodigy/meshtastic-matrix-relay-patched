@@ -89,6 +89,10 @@ def _retry_backoff_delay(
 def _format_meshtastic_portal_html(message: str) -> str | None:
     """Render Meshtastic portal messages with separated sender/body and link details."""
     body, separator, link_details = message.partition("\n\nlink: ")
+    compact_link_layout = False
+    if not separator:
+        body, separator, link_details = message.partition("\nlink: ")
+        compact_link_layout = bool(separator)
     if not separator or not link_details:
         return None
 
@@ -100,13 +104,18 @@ def _format_meshtastic_portal_html(message: str) -> str | None:
             f"{html.escape(text)}"
         )
     else:
-        body_html = html.escape(first_line)
+        escaped_first_line = html.escape(first_line)
+        body_html = (
+            f"<strong>{escaped_first_line}</strong>"
+            if compact_link_layout and newline
+            else escaped_first_line
+        )
 
     if newline:
         body_html = f"{body_html}<br/>{html.escape(rest).replace(chr(10), '<br/>')}"
 
     return (
-        f"{body_html}<br/><br/>"
+        f"{body_html}<br/>"
         f"<code>link: {html.escape(link_details)}</code>"
     )
 

@@ -187,10 +187,11 @@ def _format_portal_channel_message(
     packet: dict[str, Any],
     interface: Any | None = None,
 ) -> str:
-    name = shortname or longname
-    body = f"{name}: {text}" if name else text
+    names = [name for name in (shortname, longname) if name]
+    display_name = " ".join(dict.fromkeys(names))
+    body = f"{display_name}\n{text}" if display_name else text
     details = _packet_link_details(packet, interface)
-    return f"{body}\n\nlink: {details}" if details else body
+    return f"{body}\nlink: {details}" if details else body
 
 
 def _refresh_existing_dm_room(

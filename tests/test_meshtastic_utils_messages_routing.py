@@ -513,7 +513,7 @@ def test_on_meshtastic_message_portals_mode_formats_channel_message():
     mock_relay.assert_awaited_once()
 
     assert mock_relay.await_args.args[1] == (
-        "Short: Hello\n\nlink: LoRa, 2 hops, SNR -7.2 dB, RSSI -89 dBm"
+        "Short Long\nHello\nlink: LoRa, 2 hops, SNR -7.2 dB, RSSI -89 dBm"
     )
 
 
@@ -543,7 +543,8 @@ def test_on_meshtastic_message_portals_mode_formats_mqtt_and_relay_node():
     mock_relay.assert_awaited_once()
 
     assert mock_relay.await_args.args[1] == (
-        "Short: Hello\n\nlink: MQTT, 2 hops, SNR -16.5 dB, RSSI -87 dBm, relay RLY #12"
+        "Short Long\nHello\n"
+        "link: MQTT, 2 hops, SNR -16.5 dB, RSSI -87 dBm, relay RLY #12"
     )
 
 
@@ -563,7 +564,9 @@ def test_on_meshtastic_message_portals_mode_formats_relay_node_low_byte():
     assert mock_relay is not None
     mock_relay.assert_awaited_once()
 
-    assert mock_relay.await_args.args[1] == "Short: Hello\n\nlink: LoRa, relay RLY #90"
+    assert mock_relay.await_args.args[1] == (
+        "Short Long\nHello\nlink: LoRa, relay RLY #90"
+    )
 
 
 @pytest.mark.usefixtures("reset_meshtastic_globals")
@@ -588,7 +591,7 @@ def test_on_meshtastic_message_portals_reply_keeps_matrix_reply_and_link_details
 
     assert mock_relay.await_args.args[0] == "!room:test"
     assert mock_relay.await_args.args[1] == (
-        "Short: Hello\n\nlink: LoRa, 1 hop, SNR -7.2 dB, RSSI -89 dBm"
+        "Short Long\nHello\nlink: LoRa, 1 hop, SNR -7.2 dB, RSSI -89 dBm"
     )
     assert mock_relay.await_args.kwargs["reply_to_event_id"] == "$orig"
 

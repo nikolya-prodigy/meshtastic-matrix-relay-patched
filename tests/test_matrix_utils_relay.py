@@ -194,11 +194,24 @@ async def test_format_meshtastic_portal_html_separates_link_details():
     from mmrelay.matrix.relay import _format_meshtastic_portal_html
 
     formatted = _format_meshtastic_portal_html(
+        "2b4c Long Name\nhello\nlink: LoRa, 2 hops, SNR -9.2 dB, RSSI -102 dBm"
+    )
+
+    assert formatted == (
+        "<strong>2b4c Long Name</strong><br/>hello<br/>"
+        "<code>link: LoRa, 2 hops, SNR -9.2 dB, RSSI -102 dBm</code>"
+    )
+
+
+async def test_format_meshtastic_portal_html_accepts_legacy_sender_prefix():
+    from mmrelay.matrix.relay import _format_meshtastic_portal_html
+
+    formatted = _format_meshtastic_portal_html(
         "2b4c: hello\n\nlink: LoRa, 2 hops, SNR -9.2 dB, RSSI -102 dBm"
     )
 
     assert formatted == (
-        "<strong>2b4c:</strong> hello<br/><br/>"
+        "<strong>2b4c:</strong> hello<br/>"
         "<code>link: LoRa, 2 hops, SNR -9.2 dB, RSSI -102 dBm</code>"
     )
 
