@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
-from datetime import datetime
 import html
 import logging
 import re
 import threading
 import time
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
 import mmrelay.matrix_utils as facade
@@ -93,6 +94,11 @@ def _portal_config(config: dict[str, Any] | None) -> dict[str, Any]:
     return portals if isinstance(portals, dict) else {}
 
 
+def _dict_section(mapping: dict[str, Any], key: str) -> dict[str, Any]:
+    value = mapping.get(key)
+    return value if isinstance(value, dict) else {}
+
+
 def control_config(config: dict[str, Any] | None) -> dict[str, Any]:
     portals = _portal_config(config)
     control = portals.get("control")
@@ -108,23 +114,34 @@ def control_users(config: dict[str, Any] | None) -> list[str]:
     control = control_config(config)
     users = control.get("users")
     if isinstance(users, list):
-        return [user for user in users if isinstance(user, str) and user.startswith("@")]
+        return [
+            user for user in users if isinstance(user, str) and user.startswith("@")
+        ]
 
     # Safe fallback for early adopters of bot-managed portals.
     portals = _portal_config(config)
     invite_users = portals.get("invite_users")
     if isinstance(invite_users, list):
-        return [user for user in invite_users if isinstance(user, str) and user.startswith("@")]
+        return [
+            user
+            for user in invite_users
+            if isinstance(user, str) and user.startswith("@")
+        ]
     return []
 
 
-def is_authorized_control_user(user_id: str, config: dict[str, Any] | None = None) -> bool:
+def is_authorized_control_user(
+    user_id: str, config: dict[str, Any] | None = None
+) -> bool:
     users = control_users(config or facade.config)
     return bool(users) and user_id in users
 
 
 def is_control_room(room_config: Any) -> bool:
-    return isinstance(room_config, dict) and room_config.get("meshtastic_portal_type") == "control"
+    return (
+        isinstance(room_config, dict)
+        and room_config.get("meshtastic_portal_type") == "control"
+    )
 
 
 def commands_allowed_in_portal_rooms(config: dict[str, Any] | None) -> bool:
@@ -258,6 +275,8 @@ def _duration(seconds: Any) -> str:
 
 def _last_heard_timestamp(info: dict[str, Any]) -> float:
     value = info.get("lastHeard")
+    if value is None:
+        return -1
     try:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError):
@@ -350,7 +369,7 @@ def _format_environment_metrics(metrics: dict[str, Any]) -> str:
 
 
 def _node_key_candidates(node_id: Any, info: dict[str, Any]) -> list[str]:
-    user = info.get("user") if isinstance(info.get("user"), dict) else {}
+    user = _dict_section(info, "user")
     raw_candidates = [
         node_id,
         user.get("id"),
@@ -387,9 +406,7 @@ def _build_node_index(interface: Any) -> list[NodeEntry]:
         return []
 
     raw_entries = [
-        (node_id, info)
-        for node_id, info in nodes.items()
-        if isinstance(info, dict)
+        (node_id, info) for node_id, info in nodes.items() if isinstance(info, dict)
     ]
     raw_entries.sort(key=lambda item: _last_heard_timestamp(item[1]), reverse=True)
 
@@ -424,13 +441,17 @@ def _build_node_index(interface: Any) -> list[NodeEntry]:
 
 
 def _renumber_entries(entries: list[NodeEntry]) -> list[NodeEntry]:
-    return [replace(entry, number=number) for number, entry in enumerate(entries, start=1)]
+    return [
+        replace(entry, number=number) for number, entry in enumerate(entries, start=1)
+    ]
 
 
 def _default_node_limit(config: dict[str, Any] | None) -> int:
     plugins = config.get("plugins") if isinstance(config, dict) else None
     nodes_cfg = plugins.get("nodes") if isinstance(plugins, dict) else None
     raw_limit = nodes_cfg.get("max_display") if isinstance(nodes_cfg, dict) else None
+    if raw_limit is None:
+        return DEFAULT_NODES_LIMIT
     try:
         return max(1, int(raw_limit))
     except (TypeError, ValueError):
@@ -473,7 +494,7 @@ def _get_interface() -> Any:
 
 
 def _get_matrix_rooms() -> list[dict[str, Any]]:
-    matrix_rooms = (
+    matrix_rooms: Any = (
         facade.config.get("matrix_rooms", []) if isinstance(facade.config, dict) else []
     )
     if isinstance(matrix_rooms, dict):
@@ -487,8 +508,11 @@ def _channel_room_id(index: int) -> str | None:
     for room_config in _get_matrix_rooms():
         if room_config.get("meshtastic_portal_type") != "channel":
             continue
+        channel_value = room_config.get("meshtastic_channel")
+        if channel_value is None:
+            continue
         try:
-            channel_index = int(room_config.get("meshtastic_channel"))
+            channel_index = int(channel_value)
         except (TypeError, ValueError):
             continue
         if channel_index == index and isinstance(room_config.get("id"), str):
@@ -556,7 +580,7 @@ def _node_info_for_entry(interface: Any, entry: NodeEntry) -> dict[str, Any] | N
     for node_id, info in nodes.items():
         if not isinstance(info, dict):
             continue
-        user = info.get("user") if isinstance(info.get("user"), dict) else {}
+        user = _dict_section(info, "user")
         stable_node_id = str(user.get("id") or node_id)
         if stable_node_id == entry.node_id or str(node_id) == entry.node_id:
             return info
@@ -570,6 +594,8 @@ def _trace_hop_limit(interface: Any) -> int:
     raw_limit = getattr(lora, "hop_limit", None)
     if raw_limit is None:
         raw_limit = getattr(lora, "hopLimit", None)
+    if raw_limit is None:
+        return 7
     try:
         return max(1, min(7, int(raw_limit)))
     except (TypeError, ValueError):
@@ -815,7 +841,7 @@ def _run_trace_route_request(
     hop_limit: int,
 ) -> tuple[list[str], str | None]:
     try:
-        from meshtastic.mesh_interface_runtime.flows import WAIT_ATTR_TRACEROUTE
+        from meshtastic.mesh_interface_runtime.request_wait import WAIT_ATTR_TRACEROUTE
         from meshtastic.protobuf import mesh_pb2, portnums_pb2
         from pubsub import pub
         from pubsub.core.topicexc import TopicNameError
@@ -850,9 +876,8 @@ def _run_trace_route_request(
                 return
         if not _is_trace_response_packet(packet, portnums_pb2):
             return
-        if (
-            response_packet is None
-            or _trace_packet_rank(packet) > _trace_packet_rank(response_packet)
+        if response_packet is None or _trace_packet_rank(packet) > _trace_packet_rank(
+            response_packet
         ):
             response_packet = packet
         if first_response_at is None:
@@ -1205,13 +1230,15 @@ def _format_telemetry_response_packet(packet: dict[str, Any]) -> list[str]:
 
 def _trace_packet_rank(packet: dict[str, Any]) -> tuple[int, int, int]:
     try:
-        from meshtastic.protobuf import mesh_pb2
         from google.protobuf.message import DecodeError
+        from meshtastic.protobuf import mesh_pb2
     except Exception:  # noqa: BLE001 - best-effort response ranking
         return (0, 0, 0)
 
     decoded = packet.get("decoded", {})
-    payload = decoded.get("payload") if isinstance(decoded, dict) else None
+    payload: Any = decoded.get("payload") if isinstance(decoded, dict) else None
+    if payload is None:
+        return (0, 0, 0)
     route_discovery = mesh_pb2.RouteDiscovery()
     try:
         route_discovery.ParseFromString(payload)
@@ -1226,13 +1253,15 @@ def _trace_packet_rank(packet: dict[str, Any]) -> tuple[int, int, int]:
 
 def _trace_packet_has_return_path(packet: dict[str, Any]) -> bool:
     try:
-        from meshtastic.protobuf import mesh_pb2
         from google.protobuf.message import DecodeError
+        from meshtastic.protobuf import mesh_pb2
     except Exception:  # noqa: BLE001 - best-effort response ranking
         return False
 
     decoded = packet.get("decoded", {})
-    payload = decoded.get("payload") if isinstance(decoded, dict) else None
+    payload: Any = decoded.get("payload") if isinstance(decoded, dict) else None
+    if payload is None:
+        return False
     route_discovery = mesh_pb2.RouteDiscovery()
     try:
         route_discovery.ParseFromString(payload)
@@ -1258,11 +1287,14 @@ def _is_trace_response_packet(
     return bool(payload)
 
 
-def _extract_request_id_from_packet(interface: Any, packet: dict[str, Any]) -> int | None:
+def _extract_request_id_from_packet(
+    interface: Any, packet: dict[str, Any]
+) -> int | None:
     extractor = getattr(interface, "_extract_request_id_from_packet", None)
     if callable(extractor):
         try:
-            return extractor(packet)
+            request_id = extractor(packet)
+            return request_id if isinstance(request_id, int) else None
         except Exception:  # noqa: BLE001 - best effort for private API
             return None
     decoded = packet.get("decoded", {})
@@ -1274,14 +1306,17 @@ def _extract_request_id_from_sent_packet(interface: Any, packet: Any) -> int | N
     extractor = getattr(interface, "_extract_request_id_from_sent_packet", None)
     if callable(extractor):
         try:
-            return extractor(packet)
+            request_id = extractor(packet)
+            return request_id if isinstance(request_id, int) else None
         except Exception:  # noqa: BLE001 - best effort for private API
             return None
     packet_id = getattr(packet, "id", None)
     return packet_id if isinstance(packet_id, int) else None
 
 
-def _mark_trace_wait_finished(interface: Any, wait_attr: str, request_id: int | None) -> None:
+def _mark_trace_wait_finished(
+    interface: Any, wait_attr: str, request_id: int | None
+) -> None:
     marker = getattr(interface, "_mark_wait_acknowledged", None)
     if callable(marker):
         try:
@@ -1299,13 +1334,15 @@ def _trace_wait_factor(interface: Any, hop_limit: int) -> int:
 
 def _format_trace_route_packet(interface: Any, packet: dict[str, Any]) -> list[str]:
     try:
-        from meshtastic.protobuf import mesh_pb2
         from google.protobuf.message import DecodeError
+        from meshtastic.protobuf import mesh_pb2
     except Exception as exc:  # noqa: BLE001 - dependency/runtime problem
         return [f"Failed to parse traceroute response: {exc}"]
 
     decoded = packet.get("decoded", {})
-    payload = decoded.get("payload") if isinstance(decoded, dict) else None
+    payload: Any = decoded.get("payload") if isinstance(decoded, dict) else None
+    if payload is None:
+        return ["Failed to parse traceroute response payload."]
     route_discovery = mesh_pb2.RouteDiscovery()
     try:
         route_discovery.ParseFromString(payload)
@@ -1313,9 +1350,13 @@ def _format_trace_route_packet(interface: Any, packet: dict[str, Any]) -> list[s
         return ["Failed to parse traceroute response payload."]
 
     origin = _trace_endpoint(decoded, packet, decoded_key="dest", packet_key="to")
-    destination = _trace_endpoint(decoded, packet, decoded_key="source", packet_key="from")
+    destination = _trace_endpoint(
+        decoded, packet, decoded_key="source", packet_key="from"
+    )
     route = [origin, *list(route_discovery.route), destination]
-    route_back = _trace_route_back(route_discovery, origin, destination, decoded, packet)
+    route_back = _trace_route_back(
+        route_discovery, origin, destination, decoded, packet
+    )
     return _format_trace_route_data(
         interface,
         route,
@@ -1387,7 +1428,9 @@ def _parse_node_num(value: Any) -> int | None:
         if not text:
             return None
         try:
-            return int(text, 16) if any(c in "abcdefABCDEF" for c in text) else int(text)
+            return (
+                int(text, 16) if any(c in "abcdefABCDEF" for c in text) else int(text)
+            )
         except ValueError:
             return None
     return None
@@ -1420,7 +1463,11 @@ def _trace_node_label(interface: Any, node_num: int) -> str:
         return "Unknown node"
     hex_id = f"!{node_num:08x}"
     labels = _node_num_labels(interface)
-    return labels.get(node_num) or labels.get(hex_id.casefold()) or f"Meshtastic {hex_id[-4:]}"
+    return (
+        labels.get(node_num)
+        or labels.get(hex_id.casefold())
+        or f"Meshtastic {hex_id[-4:]}"
+    )
 
 
 def _node_num_labels(interface: Any) -> dict[Any, str]:
@@ -1432,7 +1479,7 @@ def _node_num_labels(interface: Any) -> dict[Any, str]:
     for node_key, info in nodes.items():
         if not isinstance(info, dict):
             continue
-        user = info.get("user") if isinstance(info.get("user"), dict) else {}
+        user = _dict_section(info, "user")
         short_name = str(user.get("shortName") or "").strip()
         long_name = str(user.get("longName") or "").strip()
         if short_name and long_name and short_name != long_name:
@@ -1521,7 +1568,9 @@ def _find_node_by_token(entries: list[NodeEntry], token: str) -> NodeEntry | Non
 async def _handle_nodes_command(room: Any, event: Any, args: str) -> bool:
     interface = _get_interface()
     if interface is None:
-        await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
+        await send_control_message(
+            room.room_id, "Unable to connect to Meshtastic device."
+        )
         return True
 
     all_entries = _build_node_index(interface)
@@ -1529,16 +1578,10 @@ async def _handle_nodes_command(room: Any, event: Any, args: str) -> bool:
     raw_nodes = getattr(interface, "nodes", {})
     online_ids: set[str] = set()
     if isinstance(raw_nodes, dict):
-        online_ids = {
-            str(
-                (info.get("user") if isinstance(info.get("user"), dict) else {}).get(
-                    "id"
-                )
-                or node_id
-            )
-            for node_id, info in raw_nodes.items()
-            if isinstance(info, dict) and _is_online_node_info(info)
-        }
+        for node_id, info in raw_nodes.items():
+            if not isinstance(info, dict) or not _is_online_node_info(info):
+                continue
+            online_ids.add(str(_dict_section(info, "user").get("id") or node_id))
     entries = (
         [entry for entry in all_entries if entry.node_id in online_ids]
         if options.online_only
@@ -1574,7 +1617,9 @@ async def _handle_nodes_command(room: Any, event: Any, args: str) -> bool:
 async def _handle_find_command(room: Any, event: Any, args: str) -> bool:
     interface = _get_interface()
     if interface is None:
-        await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
+        await send_control_message(
+            room.room_id, "Unable to connect to Meshtastic device."
+        )
         return True
 
     query = args.strip()
@@ -1612,7 +1657,9 @@ async def _handle_find_command(room: Any, event: Any, args: str) -> bool:
 async def _handle_channels_command(room: Any) -> bool:
     interface = _get_interface()
     if interface is None:
-        await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
+        await send_control_message(
+            room.room_id, "Unable to connect to Meshtastic device."
+        )
         return True
 
     channels = facade.discover_channels(interface, facade.config)
@@ -1643,10 +1690,13 @@ def _latest_environment_record_for_node(
             if not metrics:
                 continue
             timestamp = row.get("time") if isinstance(row, dict) else None
-            try:
-                row_time = float(timestamp)
-            except (TypeError, ValueError, OverflowError):
+            if timestamp is None:
                 row_time = 0.0
+            else:
+                try:
+                    row_time = float(timestamp)
+                except (TypeError, ValueError, OverflowError):
+                    row_time = 0.0
             if row_time >= latest_time:
                 latest_time = row_time
                 latest = dict(metrics)
@@ -1662,7 +1712,7 @@ def _environment_metrics_for_node(node_id: Any, info: dict[str, Any]) -> dict[st
 
 
 def _stable_node_id(node_id: Any, info: dict[str, Any]) -> str:
-    user = info.get("user") if isinstance(info.get("user"), dict) else {}
+    user = _dict_section(info, "user")
     return str(user.get("id") or node_id)
 
 
@@ -1698,7 +1748,9 @@ def _weather_line_for_node(
 async def _handle_weather_command(room: Any, event: Any, args: str) -> bool:
     interface = _get_interface()
     if interface is None:
-        await send_control_message(room.room_id, "Unable to connect to Meshtastic device.")
+        await send_control_message(
+            room.room_id, "Unable to connect to Meshtastic device."
+        )
         return True
 
     nodes = getattr(interface, "nodes", None)
@@ -1739,7 +1791,9 @@ async def _handle_weather_command(room: Any, event: Any, args: str) -> bool:
             lines.append(line)
 
     if not lines:
-        await send_control_message(room.room_id, "No nodes with environment sensor readings found.")
+        await send_control_message(
+            room.room_id, "No nodes with environment sensor readings found."
+        )
         return True
 
     await send_control_message(
@@ -1817,7 +1871,9 @@ async def _handle_trace_command(room: Any, event: Any, args: str) -> bool:
         )
         return True
     if not callable(getattr(interface, "sendTraceRoute", None)):
-        await send_control_message(room.room_id, "Traceroute is not supported by this Meshtastic API.")
+        await send_control_message(
+            room.room_id, "Traceroute is not supported by this Meshtastic API."
+        )
         return True
 
     await send_control_message(
@@ -1835,7 +1891,9 @@ async def _handle_trace_command(room: Any, event: Any, args: str) -> bool:
         ("trace", room.room_id, entry.node_id),
     )
     if not scheduled:
-        await send_control_message(room.room_id, f"Trace route for {entry.title} is already running.")
+        await send_control_message(
+            room.room_id, f"Trace route for {entry.title} is already running."
+        )
     return True
 
 
@@ -1895,13 +1953,17 @@ async def _handle_dm_command(room: Any, event: Any, args: str) -> bool:
     client = getattr(facade, "matrix_client", None)
     interface = _get_interface()
     if client is None or interface is None:
-        await send_control_message(room.room_id, "Matrix or Meshtastic client is not ready.")
+        await send_control_message(
+            room.room_id, "Matrix or Meshtastic client is not ready."
+        )
         return True
 
     dm_room_id = await facade.ensure_dm_room(client, interface, entry.node_id)
 
     if not dm_room_id:
-        await send_control_message(room.room_id, f"Failed to create DM room for {entry.title}.")
+        await send_control_message(
+            room.room_id, f"Failed to create DM room for {entry.title}."
+        )
         return True
     await send_control_message(
         room.room_id,
@@ -2109,10 +2171,13 @@ def _format_sent_history(status: dict[str, Any], limit: int) -> str:
         if not isinstance(record, dict):
             continue
         timestamp = record.get("timestamp")
-        try:
-            when = _relative_time(float(timestamp))
-        except (TypeError, ValueError, OverflowError, OSError):
+        if timestamp is None:
             when = "?"
+        else:
+            try:
+                when = _relative_time(float(timestamp))
+            except (TypeError, ValueError, OverflowError, OSError):
+                when = "?"
         lines.append(
             f"\n{index}. {record.get('status', '?')} / {when}\n"
             f"   {record.get('description', '?')}"
@@ -2134,7 +2199,9 @@ async def _handle_sent_command(room: Any, args: str) -> bool:
     except ValueError:
         limit = 10
     limit = max(1, min(limit, 20))
-    await send_control_message(room.room_id, _format_sent_history(_queue_status(), limit))
+    await send_control_message(
+        room.room_id, _format_sent_history(_queue_status(), limit)
+    )
     return True
 
 
@@ -2200,8 +2267,7 @@ async def _handle_status_command(room: Any) -> bool:
             f"running {str(queue_status.get('running')).lower()}"
         ),
         (
-            "last send: "
-            f"{_duration(queue_status.get('time_since_last_send'))} ago"
+            "last send: " f"{_duration(queue_status.get('time_since_last_send'))} ago"
             if queue_status.get("time_since_last_send") is not None
             else "last send: never"
         ),
@@ -2214,7 +2280,9 @@ async def _handle_refresh_command(room: Any) -> bool:
     client = getattr(facade, "matrix_client", None)
     interface = _get_interface()
     if client is None or interface is None:
-        await send_control_message(room.room_id, "Matrix or Meshtastic client is not ready.")
+        await send_control_message(
+            room.room_id, "Matrix or Meshtastic client is not ready."
+        )
         return True
     if not isinstance(facade.config, dict):
         await send_control_message(room.room_id, "Bridge config is not ready.")
@@ -2297,7 +2365,12 @@ def _plugin_command_map(plugins: list[Any]) -> dict[str, tuple[str, Any]]:
         getter = getattr(plugin, "get_matrix_commands", None)
         if not callable(getter):
             continue
-        for command in getter() or []:
+        plugin_commands = getter()
+        if isinstance(plugin_commands, (str, bytes)) or not isinstance(
+            plugin_commands, Iterable
+        ):
+            continue
+        for command in plugin_commands:
             if isinstance(command, str) and command:
                 commands.setdefault(command.casefold(), (command, plugin))
     return commands
@@ -2305,7 +2378,9 @@ def _plugin_command_map(plugins: list[Any]) -> dict[str, tuple[str, Any]]:
 
 async def handle_control_room_message(room: Any, event: Any) -> bool:
     if not is_authorized_control_user(event.sender):
-        facade.logger.info("Ignoring unauthorized control command from %s", event.sender)
+        facade.logger.info(
+            "Ignoring unauthorized control command from %s", event.sender
+        )
         await send_control_message(room.room_id, "Not authorized.")
         await _send_control_reaction(room, event, "❌")
         return True

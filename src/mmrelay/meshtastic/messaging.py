@@ -223,7 +223,12 @@ def send_text_reaction(
         packet.decoded.portnum = facade.portnums_pb2.PortNum.TEXT_MESSAGE_APP
         packet.decoded.reply_id = reply_id
         packet.decoded.emoji = facade.EMOJI_FLAG_VALUE
-        packet.id = generate_packet_id()
+        packet_id = generate_packet_id()
+        if not isinstance(packet_id, int):
+            raise TypeError(
+                "Meshtastic packet ID generator returned a non-integer value"
+            )
+        packet.id = packet_id
         packet.priority = facade.mesh_pb2.MeshPacket.Priority.RELIABLE
 
         return send_packet(packet, destinationId, wantAck=wantAck)

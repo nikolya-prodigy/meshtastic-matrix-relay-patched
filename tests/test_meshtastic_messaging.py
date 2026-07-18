@@ -102,6 +102,20 @@ class TestSendTextReply:
 
 
 @pytest.mark.usefixtures("reset_meshtastic_globals")
+class TestSendTextReaction:
+    def test_non_integer_packet_id_is_rejected(self):
+        from mmrelay.meshtastic.messaging import send_text_reaction
+
+        interface = MagicMock()
+        interface._generate_packet_id.return_value = "invalid"
+
+        result = send_text_reaction(interface, "👍", 123)
+
+        assert result is None
+        interface._send_packet.assert_not_called()
+
+
+@pytest.mark.usefixtures("reset_meshtastic_globals")
 class TestNormalizeRoomChannel:
     def test_valid_integer(self):
         from mmrelay.meshtastic.messaging import _normalize_room_channel

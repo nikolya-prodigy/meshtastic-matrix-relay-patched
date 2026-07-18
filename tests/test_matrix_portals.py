@@ -121,8 +121,18 @@ def test_discover_channels_includes_safe_channel_details() -> None:
     ]
 
 
+def test_discover_channels_handles_non_mapping_meshtastic_config() -> None:
+    interface = SimpleNamespace(localNode=SimpleNamespace(channels=[]))
+
+    assert discover_channels(interface, {"meshtastic": None}) == [
+        {"index": 0, "name": "LongFast"}
+    ]
+
+
 @pytest.mark.asyncio
-async def test_ensure_channel_rooms_creates_space_and_channel_rooms(monkeypatch) -> None:
+async def test_ensure_channel_rooms_creates_space_and_channel_rooms(
+    monkeypatch,
+) -> None:
     client = FakeClient()
     config = {
         "matrix_rooms": [],
@@ -199,7 +209,12 @@ async def test_ensure_channel_rooms_updates_existing_channel_room(monkeypatch) -
     assert len(client.created) == 1
     assert client.created[0]["name"] == "Meshtastic"
     assert client.created[0]["space"] is True
-    assert ("!existing:example.org", "m.room.name", "", {"name": "#0 LongFast"}) in client.state
+    assert (
+        "!existing:example.org",
+        "m.room.name",
+        "",
+        {"name": "#0 LongFast"},
+    ) in client.state
     assert (
         "!existing:example.org",
         "m.room.topic",
@@ -308,6 +323,17 @@ async def test_ensure_dm_room_creates_room_mapping(monkeypatch) -> None:
     ]
     assert client.created[1]["is_direct"] is True
     assert client.created[1]["name"] == "DM NOD"
+
+
+@pytest.mark.asyncio
+async def test_ensure_dm_room_requires_loaded_config(monkeypatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(facade, "config", None)
+
+    room_id = await ensure_dm_room(client, SimpleNamespace(nodes={}), "!abc")
+
+    assert room_id is None
+    assert client.created == []
 
 
 @pytest.mark.asyncio

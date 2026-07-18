@@ -22,6 +22,8 @@ logger = get_logger(__name__)
 
 def _last_heard_timestamp(info: dict[str, Any]) -> float:
     value = info.get("lastHeard")
+    if value is None:
+        return -1
     try:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError):
@@ -52,6 +54,7 @@ def _relative_age(timestamp: float) -> str:
     if minutes:
         return f"{minutes}m {secs}s ago"
     return f"{secs}s ago"
+
 
 if TYPE_CHECKING:
     from meshtastic.mesh_interface import MeshInterface
@@ -140,9 +143,7 @@ class Plugin(BasePlugin):
                 relayed_radios += 1
             if info.get("viaMqtt") is True:
                 mqtt_radios += 1
-        link_line = (
-            f"Links: direct {direct_radios}, relayed {relayed_radios}, mqtt {mqtt_radios}"
-        )
+        link_line = f"Links: direct {direct_radios}, relayed {relayed_radios}, mqtt {mqtt_radios}"
         last_heard_line = f"Last Packet: {_relative_age(last_heard)}"
         if not battery_levels and not air_util_tx and not snr:
             return (

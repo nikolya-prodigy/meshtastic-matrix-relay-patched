@@ -7,6 +7,7 @@ import io
 import mimetypes
 import re
 import urllib.request
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
@@ -14,11 +15,16 @@ from nio import RoomVisibility
 
 import mmrelay.matrix_utils as facade
 
+channel_pb2: Any = None
+config_pb2: Any = None
 try:
-    from meshtastic.protobuf import channel_pb2, config_pb2
+    from meshtastic.protobuf import channel_pb2 as imported_channel_pb2
+    from meshtastic.protobuf import config_pb2 as imported_config_pb2
 except Exception:  # noqa: BLE001 - protobuf imports are optional in tests/build tools
-    channel_pb2 = None
-    config_pb2 = None
+    pass
+else:
+    channel_pb2 = imported_channel_pb2
+    config_pb2 = imported_config_pb2
 
 DEFAULT_PORTAL_ALIAS_PREFIX = "meshtastic"
 DEFAULT_SPACE_NAME = "Meshtastic"
@@ -41,6 +47,11 @@ def portals_enabled(config: dict[str, Any] | None) -> bool:
 def _portal_config(config: dict[str, Any] | None) -> dict[str, Any]:
     portals = config.get("meshtastic_portals") if isinstance(config, dict) else None
     return portals if isinstance(portals, dict) else {}
+
+
+def _dict_section(mapping: dict[str, Any], key: str) -> dict[str, Any]:
+    value = mapping.get(key)
+    return value if isinstance(value, dict) else {}
 
 
 def _server_name() -> str:
@@ -75,7 +86,7 @@ def _alias_prefixes(config: dict[str, Any] | None) -> tuple[str, ...]:
 
 def _space_alias_localpart() -> str:
     cfg = _portal_config(facade.config)
-    space_cfg = cfg.get("space") if isinstance(cfg.get("space"), dict) else {}
+    space_cfg = _dict_section(cfg, "space")
     return _slug(space_cfg.get("alias"), f"{DEFAULT_PORTAL_ALIAS_PREFIX}-space")
 
 
@@ -102,7 +113,9 @@ def _control_users() -> list[str]:
     cfg = _control_config()
     users = cfg.get("users")
     if isinstance(users, list):
-        return [user for user in users if isinstance(user, str) and user.startswith("@")]
+        return [
+            user for user in users if isinstance(user, str) and user.startswith("@")
+        ]
     return _invite_users()
 
 
@@ -290,7 +303,9 @@ async def _invite_configured_users(
         try:
             await client.room_invite(room_id, user_id)
         except Exception:  # noqa: BLE001 - users may already be joined/invited
-            facade.logger.debug("Failed to invite %s to %s", user_id, room_id, exc_info=True)
+            facade.logger.debug(
+                "Failed to invite %s to %s", user_id, room_id, exc_info=True
+            )
 
 
 async def _create_room(
@@ -357,7 +372,9 @@ async def _create_room(
     return None
 
 
-async def _add_space_child(client: Any, space_id: str | None, child_id: str | None) -> None:
+async def _add_space_child(
+    client: Any, space_id: str | None, child_id: str | None
+) -> None:
     if not space_id or not child_id:
         return
     server = _server_name()
@@ -370,7 +387,7 @@ async def _add_space_child(client: Any, space_id: str | None, child_id: str | No
 
 async def ensure_portal_space(client: Any) -> str | None:
     cfg = _portal_config(facade.config)
-    space_cfg = cfg.get("space") if isinstance(cfg.get("space"), dict) else {}
+    space_cfg = _dict_section(cfg, "space")
     if space_cfg.get("enabled", True) is False:
         return None
 
@@ -453,8 +470,12 @@ def _channel_details_from_object(channel: Any) -> dict[str, str]:
         ("uplink", _object_value(settings, "uplink_enabled")),
         ("downlink", _object_value(settings, "downlink_enabled")),
     ):
-        enum_type = role_enum if label == "role" else modem_enum if label == "modem" else None
-        rendered = _enum_value(enum_type, value) or _bool_value(value) or _string_value(value)
+        enum_type = (
+            role_enum if label == "role" else modem_enum if label == "modem" else None
+        )
+        rendered = (
+            _enum_value(enum_type, value) or _bool_value(value) or _string_value(value)
+        )
         if rendered:
             details[label] = rendered
     if _string_value(_object_value(settings, "psk")):
@@ -462,21 +483,22 @@ def _channel_details_from_object(channel: Any) -> dict[str, str]:
     return details
 
 
-def discover_channels(interface: Any, config: dict[str, Any] | None) -> list[dict[str, Any]]:
+def discover_channels(
+    interface: Any, config: dict[str, Any] | None
+) -> list[dict[str, Any]]:
     cfg = _portal_config(config)
-    channels_cfg = cfg.get("channels") if isinstance(cfg.get("channels"), dict) else {}
+    channels_cfg = _dict_section(cfg, "channels")
     include_empty = bool(channels_cfg.get("include_empty"))
-    fallback_name = (
-        config.get("meshtastic", {}).get("meshnet_name", "LongFast")
-        if isinstance(config, dict)
-        else "LongFast"
-    )
+    meshtastic_cfg = _dict_section(config, "meshtastic") if config else {}
+    fallback_name = meshtastic_cfg.get("meshnet_name", "LongFast")
 
     discovered: dict[int, dict[str, Any]] = {}
     local_node = getattr(interface, "localNode", None)
-    raw_channels = getattr(local_node, "channels", None) or getattr(interface, "channels", None)
+    raw_channels = getattr(local_node, "channels", None) or getattr(
+        interface, "channels", None
+    )
     if isinstance(raw_channels, dict):
-        raw_iter = raw_channels.items()
+        raw_iter: Iterable[tuple[Any, Any]] = raw_channels.items()
     else:
         raw_iter = enumerate(raw_channels or [])
 
@@ -484,9 +506,11 @@ def discover_channels(interface: Any, config: dict[str, Any] | None) -> list[dic
         try:
             index = int(raw_index)
         except (TypeError, ValueError):
-            index = getattr(channel, "index", None)
+            channel_index = getattr(channel, "index", None)
+            if channel_index is None:
+                continue
             try:
-                index = int(index)
+                index = int(channel_index)
             except (TypeError, ValueError):
                 continue
         if not 0 <= index < MAX_MESHTASTIC_CHANNELS:
@@ -500,11 +524,17 @@ def discover_channels(interface: Any, config: dict[str, Any] | None) -> list[dic
             }
 
     rooms = config.get("matrix_rooms", []) if isinstance(config, dict) else []
-    room_iter = rooms if isinstance(rooms, list) else rooms.values() if isinstance(rooms, dict) else []
+    room_iter = (
+        rooms
+        if isinstance(rooms, list)
+        else rooms.values() if isinstance(rooms, dict) else []
+    )
     for room in room_iter:
         if not isinstance(room, dict):
             continue
         channel = room.get("meshtastic_channel")
+        if channel is None:
+            continue
         try:
             index = int(channel)
         except (TypeError, ValueError):
@@ -523,7 +553,7 @@ def discover_channels(interface: Any, config: dict[str, Any] | None) -> list[dic
 
 def _channel_room_name(index: int, name: str) -> str:
     cfg = _portal_config(facade.config)
-    channels_cfg = cfg.get("channels") if isinstance(cfg.get("channels"), dict) else {}
+    channels_cfg = _dict_section(cfg, "channels")
     template = str(channels_cfg.get("name_template") or "#{index} {name}")
     return template.format(index=index, name=name)
 
@@ -587,9 +617,9 @@ def _dm_name_vars(node_key: str, interface: Any) -> dict[str, str]:
     short_name = _node_user_name(
         interface, node_key, "shortName"
     ) or _database_node_name(node_key, get_shortname)
-    long_name = _node_user_name(
-        interface, node_key, "longName"
-    ) or _database_node_name(node_key, get_longname)
+    long_name = _node_user_name(interface, node_key, "longName") or _database_node_name(
+        node_key, get_longname
+    )
     display_name = short_name or long_name or node_key
 
     return {
@@ -629,7 +659,9 @@ def _format_dm_topic(display_name: str, node_key: str, interface: Any) -> str:
     model = user.get("hwModel") if isinstance(user, dict) else None
     if model:
         lines.append(f"model: {model}")
-    metrics = info.get("deviceMetrics") if isinstance(info.get("deviceMetrics"), dict) else {}
+    metrics = (
+        info.get("deviceMetrics") if isinstance(info.get("deviceMetrics"), dict) else {}
+    )
     battery = metrics.get("batteryLevel") if isinstance(metrics, dict) else None
     voltage = metrics.get("voltage") if isinstance(metrics, dict) else None
     if battery is not None or voltage is not None:
@@ -749,7 +781,7 @@ async def restore_dm_rooms(client: Any, interface: Any, config: dict[str, Any]) 
     if not portals_enabled(config):
         return 0
 
-    matrix_rooms = config.setdefault("matrix_rooms", [])
+    matrix_rooms: Any = config.setdefault("matrix_rooms", [])
     if not isinstance(matrix_rooms, list):
         facade.logger.warning("DM room restore requires matrix_rooms to be a list")
         return 0
@@ -796,9 +828,11 @@ async def restore_dm_rooms(client: Any, interface: Any, config: dict[str, Any]) 
     return restored
 
 
-async def ensure_channel_rooms(client: Any, interface: Any, config: dict[str, Any]) -> None:
+async def ensure_channel_rooms(
+    client: Any, interface: Any, config: dict[str, Any]
+) -> None:
     cfg = _portal_config(config)
-    channels_cfg = cfg.get("channels") if isinstance(cfg.get("channels"), dict) else {}
+    channels_cfg = _dict_section(cfg, "channels")
     if channels_cfg.get("auto_create", True) is False:
         return
 
@@ -808,13 +842,17 @@ async def ensure_channel_rooms(client: Any, interface: Any, config: dict[str, An
         facade.logger.warning("Auto portals require matrix_rooms to be a list")
         return
 
-    existing_channels = {
-        int(room.get("meshtastic_channel")): room
-        for room in matrix_rooms
-        if isinstance(room, dict)
-        and room.get("meshtastic_portal_type") == "channel"
-        and str(room.get("meshtastic_channel", "")).lstrip("-").isdigit()
-    }
+    existing_channels: dict[int, dict[str, Any]] = {}
+    for room in matrix_rooms:
+        if (
+            not isinstance(room, dict)
+            or room.get("meshtastic_portal_type") != "channel"
+        ):
+            continue
+        channel_value = room.get("meshtastic_channel")
+        channel_text = str(channel_value) if channel_value is not None else ""
+        if channel_text.lstrip("-").isdigit():
+            existing_channels[int(channel_text)] = room
 
     for channel in discover_channels(interface, config):
         index = channel["index"]
@@ -861,7 +899,9 @@ async def ensure_control_room(client: Any, config: dict[str, Any]) -> str | None
 
     users = _control_users()
     if not users:
-        facade.logger.warning("Control room is enabled but no control users are configured")
+        facade.logger.warning(
+            "Control room is enabled but no control users are configured"
+        )
         return None
 
     matrix_rooms = config.setdefault("matrix_rooms", [])
@@ -930,12 +970,13 @@ async def ensure_dm_room(
     channel: int | None = None,
     create: bool = True,
 ) -> str | None:
-    cfg = _portal_config(facade.config)
-    dm_cfg = (
-        cfg.get("direct_messages")
-        if isinstance(cfg.get("direct_messages"), dict)
-        else {}
-    )
+    config = facade.config
+    if not isinstance(config, dict):
+        facade.logger.error("Cannot create a Matrix DM room before config is loaded")
+        return None
+
+    cfg = _portal_config(config)
+    dm_cfg = _dict_section(cfg, "direct_messages")
 
     node_key = str(node_id)
     name_vars = _dm_name_vars(node_key, interface)
@@ -944,11 +985,19 @@ async def ensure_dm_room(
     room_name = template.format(**name_vars)
     room_topic = _format_dm_topic(display_name, node_key, interface)
 
-    matrix_rooms = facade.config.setdefault("matrix_rooms", [])
-    if not isinstance(matrix_rooms, list):
+    configured_rooms = config.get("matrix_rooms")
+    if configured_rooms is None:
+        matrix_rooms: list[Any] = []
+        config["matrix_rooms"] = matrix_rooms
+    elif isinstance(configured_rooms, list):
+        matrix_rooms = configured_rooms
+    else:
         return None
     for room in matrix_rooms:
-        if isinstance(room, dict) and str(room.get("meshtastic_destination")) == node_key:
+        if (
+            isinstance(room, dict)
+            and str(room.get("meshtastic_destination")) == node_key
+        ):
             room_id = room.get("id")
             if isinstance(room_id, str):
                 room["meshtastic_node_name"] = display_name

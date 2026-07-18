@@ -120,6 +120,8 @@ Usage: nodes [online|limit|all]
     @staticmethod
     def _last_heard_timestamp(info: dict[str, Any]) -> float:
         value = info.get("lastHeard")
+        if value is None:
+            return -1
         try:
             parsed = float(value)
         except (TypeError, ValueError, OverflowError):
@@ -158,9 +160,7 @@ Usage: nodes [online|limit|all]
             if isinstance(info, dict)
         ]
         online_nodes = [
-            (node_id, info)
-            for node_id, info in all_nodes
-            if self._is_online(info)
+            (node_id, info) for node_id, info in all_nodes if self._is_online(info)
         ]
         nodes = online_nodes if online_only else all_nodes
         nodes.sort(key=lambda item: self._last_heard_timestamp(item[1]), reverse=True)

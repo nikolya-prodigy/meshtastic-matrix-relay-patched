@@ -152,10 +152,13 @@ def _packet_link_details(packet: dict[str, Any], interface: Any | None = None) -
 
     hop_start = packet.get("hopStart")
     hop_limit = packet.get("hopLimit")
-    try:
-        hops_used = int(hop_start) - int(hop_limit)
-    except (TypeError, ValueError):
+    if hop_start is None or hop_limit is None:
         hops_used = None
+    else:
+        try:
+            hops_used = int(hop_start) - int(hop_limit)
+        except (TypeError, ValueError):
+            hops_used = None
     if hops_used is not None and hops_used >= 0:
         if hops_used == 0:
             parts.append("direct")
@@ -221,7 +224,9 @@ def _refresh_existing_dm_room(
             loop,
         )
     except Exception:
-        facade.logger.debug("Failed to schedule existing DM room refresh", exc_info=True)
+        facade.logger.debug(
+            "Failed to schedule existing DM room refresh", exc_info=True
+        )
         return
 
     def _log_failure(done: Any) -> None:
@@ -903,7 +908,8 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
     sender = packet.get("fromId") or packet.get("from")
     toId = packet.get("to")
 
-    text = decoded.get("text")
+    raw_text = decoded.get("text")
+    text = raw_text if isinstance(raw_text, str) else ""
     replyId = decoded.get("replyId")
     emoji_flag = "emoji" in decoded and decoded["emoji"] == EMOJI_FLAG_VALUE
 
@@ -941,7 +947,9 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
         orig = facade.get_message_map_by_meshtastic_id(replyId)
         if orig:
             # orig = (matrix_event_id, matrix_room_id, meshtastic_text, meshtastic_meshnet)
-            matrix_event_id, matrix_room_id, _meshtastic_text, _meshtastic_meshnet = orig
+            matrix_event_id, matrix_room_id, _meshtastic_text, _meshtastic_meshnet = (
+                orig
+            )
             reaction_symbol = text.strip() if (text and text.strip()) else "⚠️"
 
             facade._fire_and_forget(
