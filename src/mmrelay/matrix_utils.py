@@ -47,6 +47,7 @@ __all__ = [
     "_display_room_channel_mappings",
     "_estimate_clock_rollback_ms",
     "_escape_leading_prefix_for_markdown",
+    "_ensure_own_device_cross_signed",
     "_extract_localpart_from_mxid",
     "_first_nonblank_str",
     "_get_detailed_matrix_error_message",
@@ -518,6 +519,9 @@ from mmrelay.matrix.credentials import (
     _missing_credentials_keys,
     _resolve_and_load_credentials,
     _resolve_credentials_save_path,
+)
+from mmrelay.matrix.e2ee_identity import (
+    _ensure_own_device_cross_signed,
 )
 from mmrelay.matrix.auth import (
     _close_matrix_client_after_failure,

@@ -2265,6 +2265,16 @@ def handle_auth_login(args: argparse.Namespace) -> int:
             print("\nMatrix Bot Authentication")
             print("=========================")
 
+    config_for_paths: dict[str, Any] | None = None
+    try:
+        from mmrelay.config import load_config_silently
+
+        config_for_paths = load_config_silently(args)
+    except (OSError, PermissionError, ImportError, ValueError) as e:
+        _get_logger().debug(
+            "Could not load config for Matrix authentication paths: %s", e
+        )
+
     try:
         result = asyncio.run(
             login_matrix_bot(
@@ -2272,6 +2282,7 @@ def handle_auth_login(args: argparse.Namespace) -> int:
                 username=username,
                 password=password,
                 logout_others=False,
+                config_for_paths=config_for_paths,
             )
         )
     except KeyboardInterrupt:

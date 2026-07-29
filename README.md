@@ -16,6 +16,23 @@ Kellogg. Исходный MMRelay остаётся первоисточнико�
 > Это не Matrix Application Service. Комнаты создаёт и обслуживает обычный
 > Matrix-пользователь, под которым запущен бот.
 
+## Matrix E2EE
+
+MMRelay использует
+[mindroom-nio](https://github.com/mindroom-ai/mindroom-nio) и vodozemac. При
+включённом E2EE мост пытается создать или восстановить cross-signing identity
+бота и подписать только собственное Matrix-устройство. Другие пользователи,
+Meshtastic-ноды и связи между Matrix и Meshtastic identity не верифицируются.
+
+Если homeserver требует пароль для первоначальной загрузки cross-signing
+ключей, следует один раз выполнить `mmrelay auth login`. Credentials, E2EE
+store и cross-signing sidecar необходимо резервировать вместе. Подробнее:
+[E2EE Setup Guide](docs/E2EE.md).
+
+Для работы с Meshtastic используется
+[mtjk](https://github.com/jeremiah-k/mtjk) с исправлениями стабильности BLE,
+потокобезопасности и управления подключениями.
+
 ## Чем отличается форк
 
 | Возможность            | MMRelay upstream                    | Этот форк                                                                             |

@@ -270,32 +270,39 @@ class TestCLIAuthLoginEnhancements(unittest.TestCase):
         )
         self.assertTrue(standard_banner)
 
-    @patch("mmrelay.config.load_config")
+    @patch("mmrelay.config.load_config_silently")
     @patch("mmrelay.matrix_utils.login_matrix_bot")
     @patch("builtins.print")
     def test_auth_login_handles_config_load_error(
-        self, mock_print, mock_login, mock_load_config
+        self, mock_print, mock_login, mock_load_config_silently
     ):
         """Test that auth login handles config loading errors gracefully."""
         from mmrelay.cli import handle_auth_login
 
         # Mock config loading to fail
-        mock_load_config.side_effect = Exception("Config load failed")
+        mock_load_config_silently.side_effect = ValueError("Config load failed")
 
         # Mock the login function to return a regular value (not a coroutine)
         # Following the testing guide pattern for async functions called via asyncio.run()
         mock_login.return_value = True
 
-        handle_auth_login(self.mock_args)
+        result = handle_auth_login(self.mock_args)
 
-        # Should still show standard banner (fallback behavior)
+        self.assertEqual(result, EXIT_CODE_SUCCESS)
+        mock_load_config_silently.assert_called_once_with(self.mock_args)
+        mock_login.assert_called_once_with(
+            homeserver=None,
+            username=None,
+            password=None,
+            logout_others=False,
+            config_for_paths=None,
+        )
         printed_messages = [
             call.args[0] for call in mock_print.call_args_list if call.args
         ]
-        banner_shown = any(
-            "Matrix Bot Authentication" in str(msg) for msg in printed_messages
+        self.assertTrue(
+            any("Matrix Bot Authentication" in str(msg) for msg in printed_messages)
         )
-        self.assertTrue(banner_shown)
 
 
 class TestCLIE2EEValidation(unittest.TestCase):
