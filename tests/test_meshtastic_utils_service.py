@@ -33,6 +33,12 @@ from tests.conftest import cleanup_ble_future_state
 TEST_PACKET_RX_TIME = 1234567890
 
 
+def test_meshtastic_facade_exports_exist():
+    """Every declared Meshtastic facade export must be available at runtime."""
+    missing = [name for name in mu.__all__ if not hasattr(mu, name)]
+    assert missing == []
+
+
 def _cancel_startup_drain_timer() -> None:
     """Best-effort cancellation and join of the startup-drain expiry timer."""
     import mmrelay.meshtastic_utils as _mu

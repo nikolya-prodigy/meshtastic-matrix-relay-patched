@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Protocol, cast
 
 from nio import AsyncClientConfig
 
@@ -11,6 +12,10 @@ from mmrelay.log_utils import get_logger
 __all__ = ["build_matrix_client_config"]
 
 logger = get_logger(name="Matrix")
+
+
+class _WritableRotatedDeviceKeyConfig(Protocol):
+    replace_rotated_device_keys: bool
 
 
 def build_matrix_client_config(
@@ -52,9 +57,8 @@ def build_matrix_client_config(
 
     if e2ee_enabled and hasattr(config, "replace_rotated_device_keys"):
         try:
-            # pyright cannot see that the dataclass attribute is read-only;
-            # the defensive try/except preserves PC's TOFU-compat pattern.
-            config.replace_rotated_device_keys = True  # type: ignore[reportAttributeAccessIssue]
+            writable_config = cast(_WritableRotatedDeviceKeyConfig, config)
+            writable_config.replace_rotated_device_keys = True
         except (AttributeError, TypeError):
             # Preserve compatibility with immutable dataclass-style providers
             # without using dataclass internals as the capability check.

@@ -515,8 +515,9 @@ def _channel_room_id(index: int) -> str | None:
             channel_index = int(channel_value)
         except (TypeError, ValueError):
             continue
-        if channel_index == index and isinstance(room_config.get("id"), str):
-            return room_config["id"]
+        room_id = room_config.get("id")
+        if channel_index == index and isinstance(room_id, str):
+            return room_id
     return None
 
 

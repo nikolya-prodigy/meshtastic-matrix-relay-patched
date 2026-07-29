@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
+import mmrelay.matrix_utils as matrix_utils
 from mmrelay.constants.database import DEFAULT_MSGS_TO_KEEP
 from mmrelay.matrix_utils import (
     _add_truncated_vars,
@@ -27,6 +28,12 @@ from mmrelay.matrix_utils import (
 )
 
 # Configuration & Mapping Tests
+
+
+def test_matrix_facade_exports_exist():
+    """Every declared Matrix facade export must be available at runtime."""
+    missing = [name for name in matrix_utils.__all__ if not hasattr(matrix_utils, name)]
+    assert missing == []
 
 
 def test_create_mapping_info_defaults():
