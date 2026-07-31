@@ -1,6 +1,7 @@
 from mmrelay.matrix.fragments import (
     MESHTASTIC_TEXT_PAYLOAD_LIMIT_BYTES,
     get_message_fragmentation_config,
+    optimize_text_with_homoglyphs,
     split_text_for_meshtastic,
 )
 
@@ -25,6 +26,32 @@ def test_short_text_is_not_fragmented_when_enabled():
     text = "Короткое сообщение"
 
     assert split_text_for_meshtastic(text, _config()) == [text]
+
+
+def test_homoglyph_optimization_matches_android_and_avoids_fragmentation():
+    text = (
+        "РСЧС/БПЛА: Приморско-Ахтарский округ, Горячий Ключ, Краснодар и ещё "
+        "9 МО. Беспилотная опасность. Укрыться, не выходить на улицу, 112"
+    )
+
+    fragments = split_text_for_meshtastic(
+        text,
+        _config(max_payload_bytes=200, homoglyph_optimization=True),
+    )
+
+    assert len(text.encode("utf-8")) == 234
+    assert len(fragments) == 1
+    assert len(fragments[0].encode("utf-8")) == 187
+    assert fragments[0] == optimize_text_with_homoglyphs(text)
+
+
+def test_homoglyph_optimization_is_opt_in():
+    text = "Русское сообщение " * 10
+
+    normalized = get_message_fragmentation_config(_config())
+
+    assert normalized["homoglyph_optimization"] is False
+    assert split_text_for_meshtastic(text, _config())[0].startswith("[1/")
 
 
 def test_long_cyrillic_text_is_split_on_utf8_byte_limit():

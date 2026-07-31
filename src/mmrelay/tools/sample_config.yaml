@@ -107,6 +107,15 @@ meshtastic:
   # See docs/ADVANCED_CONFIGURATION.md for behavior details.
   #message_delay: 2.5 # Delay in seconds between messages sent to mesh (minimum: 2.0 due to firmware)
   #timeout: 30 # Timeout in seconds for Meshtastic operations (default: 30, library default: 300)
+  #message_fragmentation:
+  #  enabled: false
+  #  max_payload_bytes: 200
+  #  fragment_delay_secs: 15
+  #  prefix_template: "[{index}/{total}] "
+  #  last_suffix_template: ""
+  #  # Replace visually identical Cyrillic glyphs with one-byte Latin glyphs,
+  #  # matching the optional Meshtastic Android optimization.
+  #  homoglyph_optimization: false
   # Seconds between refreshes of cached long/short node-name tables from Meshtastic NodeDB.
   # Set to 0 to disable periodic refresh. Increase on large/busy meshes to reduce overhead;
   # decrease if names appear stale. Future versions may expand this beyond name caches.

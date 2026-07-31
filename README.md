@@ -223,6 +223,9 @@ matrix_bridge_meshtastic_relay_configuration_extension_yaml: |
       # Размер считается в UTF-8 байтах и ограничивается максимумом 233.
       max_payload_bytes: 200
       fragment_delay_secs: 15
+      # Как в Android-клиенте: заменять визуально одинаковые кириллические
+      # символы однобайтными латинскими перед проверкой размера.
+      homoglyph_optimization: true
       # В обоих шаблонах доступны {index} и {total}.
       prefix_template: "[{index}/{total}] "
       last_suffix_template: ""
@@ -262,7 +265,7 @@ matrix_bridge_meshtastic_relay_configuration_extension_yaml: |
 | `direct_messages.*`                | Автосоздание DM и шаблон имени комнаты                             |
 | `message_interactions.*`           | Нативный relay replies и reactions                                 |
 | `delivery_receipts.*`              | Запрос ACK и Matrix-реакции состояния доставки                     |
-| `message_fragmentation.*`          | Деление длинного текста и pacing частей                            |
+| `message_fragmentation.*`          | Оптимизация кириллицы, деление текста и pacing частей              |
 | `plugins.ping.auto_pong.*`         | Триггеры, ответ, каналы и параметры линка в auto-pong              |
 | `database.msg_map.wipe_on_restart` | Сохранение связей событий для replies/reactions после рестарта     |
 

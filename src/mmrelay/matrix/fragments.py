@@ -11,6 +11,39 @@ DEFAULT_FRAGMENT_LAST_SUFFIX_TEMPLATE = ""
 DEFAULT_FRAGMENT_DELAY_SECS = 15.0
 MESHTASTIC_TEXT_PAYLOAD_LIMIT_BYTES = 233
 
+# Matches the optional Android client optimization: replace only glyphs that
+# are visually identical across Cyrillic and Latin alphabets.
+HOMOGLYPH_TRANSLATION = str.maketrans(
+    {
+        "Ѕ": "S",
+        "І": "I",
+        "Ј": "J",
+        "А": "A",
+        "В": "B",
+        "Е": "E",
+        "К": "K",
+        "М": "M",
+        "Н": "H",
+        "О": "O",
+        "Р": "P",
+        "С": "C",
+        "Т": "T",
+        "Х": "X",
+        "а": "a",
+        "е": "e",
+        "о": "o",
+        "р": "p",
+        "с": "c",
+        "у": "y",
+        "х": "x",
+        "ѕ": "s",
+        "і": "i",
+        "ј": "j",
+        "Ү": "Y",
+        "З": "3",
+    }
+)
+
 
 def get_message_fragmentation_config(config: dict[str, Any] | None) -> dict[str, Any]:
     """Return normalized Matrix -> Meshtastic message fragmentation settings."""
@@ -27,7 +60,9 @@ def get_message_fragmentation_config(config: dict[str, Any] | None) -> dict[str,
         raw_config.get("max_payload_bytes"),
         DEFAULT_FRAGMENT_MAX_PAYLOAD_BYTES,
     )
-    max_payload_bytes = max(32, min(max_payload_bytes, MESHTASTIC_TEXT_PAYLOAD_LIMIT_BYTES))
+    max_payload_bytes = max(
+        32, min(max_payload_bytes, MESHTASTIC_TEXT_PAYLOAD_LIMIT_BYTES)
+    )
 
     prefix_template = raw_config.get(
         "prefix_template",
@@ -49,6 +84,7 @@ def get_message_fragmentation_config(config: dict[str, Any] | None) -> dict[str,
 
     return {
         "enabled": bool(raw_config.get("enabled", False)),
+        "homoglyph_optimization": bool(raw_config.get("homoglyph_optimization", False)),
         "max_payload_bytes": max_payload_bytes,
         "prefix_template": prefix_template,
         "last_suffix_template": last_suffix_template,
@@ -64,6 +100,9 @@ def split_text_for_meshtastic(
     fragmentation = get_message_fragmentation_config(config)
     if not fragmentation["enabled"]:
         return [text]
+
+    if fragmentation["homoglyph_optimization"]:
+        text = optimize_text_with_homoglyphs(text)
 
     max_payload_bytes = int(fragmentation["max_payload_bytes"])
     if _utf8_len(text) <= max_payload_bytes:
@@ -97,6 +136,11 @@ def split_text_for_meshtastic(
             return fragments
         total_estimate = len(body_chunks)
     return fragments
+
+
+def optimize_text_with_homoglyphs(text: str) -> str:
+    """Reduce UTF-8 size using visually identical Cyrillic/Latin glyphs."""
+    return text.translate(HOMOGLYPH_TRANSLATION)
 
 
 def _split_body_chunks(
@@ -173,7 +217,9 @@ def _best_text_cut(text: str, end: int, capacity_bytes: int) -> int:
 
 
 def _format_prefix(template: str, index: int, total: int) -> str:
-    return _format_template(template, index, total) or DEFAULT_FRAGMENT_PREFIX_TEMPLATE.format(
+    return _format_template(
+        template, index, total
+    ) or DEFAULT_FRAGMENT_PREFIX_TEMPLATE.format(
         index=index,
         total=total,
     )
