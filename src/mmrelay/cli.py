@@ -57,6 +57,8 @@ from mmrelay.constants.config import (
     CONFIG_SECTION_DATABASE_LEGACY,
     CONFIG_SECTION_MATRIX,
     CONFIG_SECTION_MESHTASTIC,
+    LEGACY_LAYOUT_FINAL_MIGRATION_SERIES,
+    LEGACY_LAYOUT_REMOVAL_VERSION,
     REQUIRED_CREDENTIALS_KEYS,
 )
 from mmrelay.constants.formats import (
@@ -416,6 +418,15 @@ def parse_arguments() -> argparse.Namespace:
         "--password",
         metavar="PWD",
         help="Matrix password (can be empty). If provided, --homeserver and --username are also required. For security, prefer interactive mode.",
+    )
+    login_parser.add_argument(
+        "--reset-cross-signing",
+        action="store_true",
+        help=(
+            "Replace an existing Matrix cross-signing identity when MMRelay's "
+            "local sidecar is missing. Reuses the current device when possible "
+            "and may require other clients to verify the identity again."
+        ),
     )
 
     auth_subparsers.add_parser(
@@ -2208,6 +2219,7 @@ def handle_auth_login(args: argparse.Namespace) -> int:
     homeserver = getattr(args, "homeserver", None)
     username = getattr(args, "username", None)
     password = getattr(args, "password", None)
+    reset_cross_signing = getattr(args, "reset_cross_signing", False) is True
 
     # Count provided parameters (empty strings count as provided)
     provided_params = [p for p in [homeserver, username, password] if p is not None]
@@ -2276,15 +2288,16 @@ def handle_auth_login(args: argparse.Namespace) -> int:
         )
 
     try:
-        result = asyncio.run(
-            login_matrix_bot(
-                homeserver=homeserver,
-                username=username,
-                password=password,
-                logout_others=False,
-                config_for_paths=config_for_paths,
-            )
-        )
+        login_kwargs: dict[str, Any] = {
+            "homeserver": homeserver,
+            "username": username,
+            "password": password,
+            "logout_others": False,
+            "config_for_paths": config_for_paths,
+        }
+        if reset_cross_signing:
+            login_kwargs["reset_cross_signing"] = True
+        result = asyncio.run(login_matrix_bot(**login_kwargs))
     except KeyboardInterrupt:
         print("\nAuthentication cancelled by user.")
         return 1
@@ -2299,12 +2312,18 @@ def handle_auth_login(args: argparse.Namespace) -> int:
         return 1
     else:
         if result:
+            from mmrelay.config import get_explicit_credentials_path
             from mmrelay.paths import get_credentials_path
 
-            creds_path = get_credentials_path()
+            explicit_credentials_path = get_explicit_credentials_path(config_for_paths)
+            creds_path = (
+                os.path.expanduser(explicit_credentials_path)
+                if explicit_credentials_path
+                else str(get_credentials_path())
+            )
             # Keep non-interactive output quiet for automation and existing CLI behavior.
             if len(provided_params) == 0:
-                if creds_path.exists():
+                if os.path.exists(creds_path):
                     print(f"✅ credentials.json saved: {creds_path}")
                 else:
                     print(
@@ -2523,6 +2542,14 @@ def handle_migrate_command(args: argparse.Namespace) -> int:
 
         print("MMRelay Migration")
         print("=================")
+        print(
+            f"NOTICE: MMRelay {LEGACY_LAYOUT_FINAL_MIGRATION_SERIES} is the final "
+            "release series that includes legacy-layout migration tooling."
+        )
+        print(
+            f"Complete migration before upgrading to v{LEGACY_LAYOUT_REMOVAL_VERSION} "
+            "or newer."
+        )
         print(f"Mode: {'DRY RUN' if dry_run else 'APPLY'}")
         print(f"Force overwrite: {'yes' if force else 'no'}")
         print(f"MMRELAY_HOME: {paths_info.get('home')}")

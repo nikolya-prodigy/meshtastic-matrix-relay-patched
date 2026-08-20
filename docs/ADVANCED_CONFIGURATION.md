@@ -125,8 +125,9 @@ meshtastic:
 - `ENCRYPTED` is a log/display label, not a valid override value.
 - `chat_portnums` only makes a packet relay-eligible; Matrix delivery still requires a usable channel. If channel info is missing, plugins still run but the Matrix relay leg is skipped.
 
-For implementation details, rationale, and edge cases, see
-[`docs/dev/meshtastic_packet_routing_policy.md`](dev/meshtastic_packet_routing_policy.md).
+The routing checks above are applied before Matrix delivery. Except for packets
+dropped by `disabled_portnums`, plugins may still observe relay-ineligible
+packets when their own subscriptions permit it.
 
 ## Meshtastic Health Check Overrides
 
@@ -147,6 +148,7 @@ Behavior notes:
 - `connect_probe_enabled` defaults to `health_check.enabled` when unset.
 - First process connect uses a startup drain window to avoid relaying backlogged packets.
 - Reconnects use a bounded pre-start bootstrap path; they do not re-run the startup drain window.
+- A connect-time metadata probe waits until the active startup drain or reconnect bootstrap window has ended, then adds the normal post-stabilization delay before sending probe traffic.
 - BLE connections use disconnect detection and skip periodic metadata probes.
 - Legacy `meshtastic.heartbeat_interval` is still supported for compatibility, but `health_check` is preferred.
 
@@ -328,6 +330,15 @@ Use environment variables **only** when:
 | `MMRELAY_DATABASE_PATH`                      | `database.path`                      | string  | SQLite database path                                                                                                 |
 | `MMRELAY_HOME`                               | _(path override)_                    | string  | Override application home directory (default: `~/.mmrelay`)                                                          |
 | `MMRELAY_LOG_PATH`                           | _(path override)_                    | string  | Override log file path (default: `<home>/logs/mmrelay.log`)                                                          |
+
+For the application log file, path precedence is the explicit logfile CLI option,
+`MMRELAY_LOG_PATH`, `logging.filename` (including `MMRELAY_LOG_FILE`), then the
+default `<home>/logs/mmrelay.log`. User home directory (`~`) and
+environment-variable markers are
+expanded before the file is opened. Normal direct runs and the systemd service
+use the same file-logging rules; systemd additionally captures console output in
+the journal. CLI-only maintenance commands may suppress file logging unless it
+is explicitly enabled.
 
 ## Tips for Advanced Configuration
 

@@ -278,6 +278,7 @@ matrix_bridge_meshtastic_relay_configuration_extension_yaml: |
 - [Docker Guide](docs/DOCKER.md)
 - [Kubernetes Guide](docs/KUBERNETES.md)
 - [E2EE Setup Guide](docs/E2EE.md)
+- [What's New in MMRelay 1.4](docs/WHATS_NEW_1.4.md)
 - [Advanced Configuration](docs/ADVANCED_CONFIGURATION.md)
 - [MMRelay Wiki](https://github.com/jeremiah-k/meshtastic-matrix-relay/wiki)
 

@@ -45,6 +45,18 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Validate release tag against package version
+        if: ${{ github.event_name == 'release' }}
+        run: python scripts/ci/validate_release_version.py --tag "${{ github.event.release.tag_name }}"
 
       - name: Extract version and build info
         id: get_version

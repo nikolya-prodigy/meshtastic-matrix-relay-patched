@@ -1,6 +1,5 @@
 """Configuration loading, path resolution, and credential management for MMRelay."""
 
-import argparse
 import asyncio
 import functools
 import json
@@ -36,7 +35,7 @@ from mmrelay.constants.config import (
     CONFIG_SECTION_CUSTOM_PLUGINS,
     CONFIG_SECTION_MATRIX,
     CONFIG_SECTION_MESHTASTIC,
-    DEPRECATION_VERSIONS,
+    LEGACY_LAYOUT_REMOVAL_VERSION,
     ENV_BOOL_FALSE_VALUES,
     ENV_BOOL_TRUE_VALUES,
     JSON_INDENT_STANDARD,
@@ -74,9 +73,6 @@ class _ConfigPathArgs(Protocol):
     """Parsed CLI argument surface used for configuration path selection."""
 
     config: str | None
-
-
-_ConfigPathInput = argparse.Namespace | _ConfigPathArgs
 
 
 class CredentialsPathError(OSError):
@@ -153,7 +149,7 @@ def _warn_on_legacy_path_overrides(
                 "Use MMRELAY_HOME to control all data paths. "
                 "Support for these overrides will be removed in v%s.",
                 "; ".join(warnings_to_emit),
-                DEPRECATION_VERSIONS[1],
+                LEGACY_LAYOUT_REMOVAL_VERSION,
             )
 
 
@@ -177,7 +173,7 @@ def _emit_legacy_credentials_warning(credentials_path: str) -> None:
         "Please run 'mmrelay migrate' to move to new unified structure. "
         "Support for legacy credentials will be removed in v%s.",
         credentials_path,
-        DEPRECATION_VERSIONS[1],
+        LEGACY_LAYOUT_REMOVAL_VERSION,
     )
 
 
@@ -190,7 +186,7 @@ def _warn_deprecated(_name: str) -> None:
         _name (str): Ignored; included so callers can cache or key warnings (e.g., with lru_cache).
     """
     warnings.warn(
-        f"Use paths.get_home_dir() instead. Support will be removed in v{DEPRECATION_VERSIONS[1]}.",  # [1] is the removal version
+        f"Use paths.get_home_dir() instead. Support will be removed in v{LEGACY_LAYOUT_REMOVAL_VERSION}.",
         DeprecationWarning,
         stacklevel=3,
     )
@@ -246,7 +242,7 @@ def get_app_path() -> str:
         return os.path.dirname(os.path.abspath(__file__))
 
 
-def get_config_paths(args: _ConfigPathInput | None = None) -> list[str]:
+def get_config_paths(args: _ConfigPathArgs | None = None) -> list[str]:
     """
     Get a prioritized list of candidate configuration file paths for the application.
 
@@ -740,7 +736,7 @@ def is_e2ee_enabled(config: dict[str, Any] | None) -> bool:
 
 
 def _iter_readable_config_mappings(
-    args: _ConfigPathInput | None = None,
+    args: _ConfigPathArgs | None = None,
 ) -> Iterable[dict[str, Any]]:
     """Yield readable configuration mappings without logging or global mutation."""
     try:
@@ -760,23 +756,30 @@ def _iter_readable_config_mappings(
         yield loaded if isinstance(loaded, dict) else {}
 
 
-def load_config_silently(args: _ConfigPathInput | None = None) -> dict[str, Any]:
+def load_config_silently(args: _ConfigPathArgs | None = None) -> dict[str, Any]:
     """Load path-related configuration without emitting setup diagnostics.
 
     This best-effort loader is intended for commands such as ``mmrelay auth
     login`` that need the selected config mapping before normal application
-    logging is configured. It does not mutate module-level config state, emit
-    legacy-path warnings, or log unreadable/malformed candidates.
+    logging is configured. It mirrors ``load_config`` candidate precedence:
+    an explicitly requested missing file does not fall through to defaults,
+    and the first readable candidate is authoritative even when it is empty.
+    The function does not mutate module-level config state, emit legacy-path
+    warnings, or log unreadable/malformed candidates.
 
-    Returns an empty mapping when no readable mapping is available.
+    Returns an empty mapping when the selected candidate is empty/non-mapping
+    or when no readable mapping is available.
     """
+    explicit_path = getattr(args, "config", None) if args else None
+    if explicit_path and not os.path.isfile(explicit_path):
+        return {}
+
     for mapping in _iter_readable_config_mappings(args):
-        if mapping:
-            return mapping
+        return mapping
     return {}
 
 
-def check_e2ee_enabled_silently(args: _ConfigPathInput | None = None) -> bool:
+def check_e2ee_enabled_silently(args: _ConfigPathArgs | None = None) -> bool:
     """
     Check whether End-to-End Encryption (E2EE) is enabled by inspecting the first readable configuration file.
 
@@ -1386,7 +1389,7 @@ def set_config(module: Any, passed_config: dict[str, Any]) -> dict[str, Any]:
 
 def load_config(
     config_file: str | None = None,
-    args: _ConfigPathInput | None = None,
+    args: _ConfigPathArgs | None = None,
     config_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """

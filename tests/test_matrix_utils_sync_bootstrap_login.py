@@ -17,6 +17,7 @@ from tests.constants import TEST_LOGIN_CREDENTIAL
 TEST_CREDS_PATH = str(Path(tempfile.gettempdir()) / "creds.json")
 TEST_E2EE_STORE_PATH = str(Path(tempfile.gettempdir()) / "e2ee_store")
 
+
 def _make_login_bot_mocks():
     mock_temp = MagicMock()
     mock_temp.discovery_info = AsyncMock(side_effect=Exception("skip discovery"))
@@ -681,6 +682,7 @@ async def test_login_matrix_bot_e2ee_store_path_creation(
             password=TEST_LOGIN_CREDENTIAL,
             logout_others=False,
             config_for_paths={},
+            reset_cross_signing=True,
         )
 
     assert result is True
@@ -688,6 +690,87 @@ async def test_login_matrix_bot_e2ee_store_path_creation(
     ensure_cross_signed.assert_awaited_once_with(
         mock_client,
         password=TEST_LOGIN_CREDENTIAL,
+        reset_cross_signing=True,
+    )
+
+
+@pytest.mark.asyncio
+@patch("mmrelay.matrix_utils._create_ssl_context", return_value=None)
+@patch("mmrelay.matrix_utils.AsyncClient")
+@patch("mmrelay.matrix_utils.logger")
+async def test_login_matrix_bot_rejects_cross_signing_reset_when_e2ee_disabled(
+    mock_logger: MagicMock,
+    mock_async_client: MagicMock,
+    mock_ssl: MagicMock,
+) -> None:
+    del mock_ssl
+    mock_async_client.return_value = _make_login_bot_mocks()
+
+    with (
+        patch("mmrelay.matrix_utils.config_module.load_config", return_value={}),
+        patch(
+            "mmrelay.matrix_utils._resolve_credentials_save_path",
+            return_value=TEST_CREDS_PATH,
+        ),
+        patch("mmrelay.matrix_utils.is_e2ee_enabled", return_value=False),
+    ):
+        result = await login_matrix_bot(
+            homeserver="https://matrix.org",
+            username="@bot:matrix.org",
+            password=TEST_LOGIN_CREDENTIAL,
+            logout_others=False,
+            config_for_paths={},
+            reset_cross_signing=True,
+        )
+
+    assert result is False
+    assert mock_async_client.call_count == 1
+    assert any(
+        "E2EE is not enabled" in str(call.args[0])
+        for call in mock_logger.error.call_args_list
+    )
+
+
+@pytest.mark.asyncio
+@patch("mmrelay.matrix_utils._create_ssl_context", return_value=None)
+@patch("mmrelay.matrix_utils.AsyncClient")
+@patch("mmrelay.matrix_utils.logger")
+async def test_login_matrix_bot_rejects_cross_signing_reset_without_password(
+    mock_logger: MagicMock,
+    mock_async_client: MagicMock,
+    mock_ssl: MagicMock,
+) -> None:
+    del mock_ssl
+    mock_async_client.return_value = _make_login_bot_mocks()
+
+    with (
+        patch("getpass.getpass", return_value=""),
+        patch("mmrelay.matrix_utils.config_module.load_config", return_value={}),
+        patch(
+            "mmrelay.matrix_utils._resolve_credentials_save_path",
+            return_value=TEST_CREDS_PATH,
+        ),
+        patch("mmrelay.matrix_utils.is_e2ee_enabled", return_value=True),
+        patch(
+            "mmrelay.matrix_utils.get_e2ee_store_dir",
+            return_value=TEST_E2EE_STORE_PATH,
+        ),
+        patch("os.makedirs"),
+    ):
+        result = await login_matrix_bot(
+            homeserver="https://matrix.org",
+            username="@bot:matrix.org",
+            password="",
+            logout_others=False,
+            config_for_paths={},
+            reset_cross_signing=True,
+        )
+
+    assert result is False
+    assert mock_async_client.call_count == 1
+    assert any(
+        "without password authentication" in str(call.args[0])
+        for call in mock_logger.error.call_args_list
     )
 
 
@@ -723,21 +806,75 @@ async def test_login_matrix_bot_closes_client_when_cross_signing_is_cancelled(
             return_value=TEST_E2EE_STORE_PATH,
         ),
         patch("os.makedirs"),
+        pytest.raises(asyncio.CancelledError),
     ):
-        with pytest.raises(asyncio.CancelledError):
-            await login_matrix_bot(
-                homeserver="https://matrix.org",
-                username="@bot:matrix.org",
-                password=TEST_LOGIN_CREDENTIAL,
-                logout_others=False,
-                config_for_paths={},
-            )
+        await login_matrix_bot(
+            homeserver="https://matrix.org",
+            username="@bot:matrix.org",
+            password=TEST_LOGIN_CREDENTIAL,
+            logout_others=False,
+            config_for_paths={},
+        )
 
     ensure_cross_signed.assert_awaited_once_with(
         mock_client,
         password=TEST_LOGIN_CREDENTIAL,
     )
     mock_client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("mmrelay.matrix_utils._create_ssl_context", return_value=None)
+@patch("mmrelay.matrix_utils.AsyncClient")
+@patch("mmrelay.matrix_utils.logger")
+async def test_login_matrix_bot_preserves_cancellation_when_client_close_fails(
+    mock_logger: MagicMock,
+    mock_async_client: MagicMock,
+    mock_ssl: MagicMock,
+) -> None:
+    del mock_ssl
+    temp_client = _make_login_bot_mocks()
+    mock_client, _ = _make_logged_in_client()
+    mock_client.close = AsyncMock(side_effect=RuntimeError("close failed"))
+    mock_async_client.side_effect = [temp_client, mock_client]
+    ensure_cross_signed = AsyncMock(side_effect=asyncio.CancelledError)
+
+    with (
+        patch("mmrelay.matrix_utils.config_module.load_config", return_value={}),
+        patch(
+            "mmrelay.matrix_utils._resolve_credentials_save_path",
+            return_value=TEST_CREDS_PATH,
+        ),
+        patch("mmrelay.matrix_utils.save_credentials"),
+        patch("mmrelay.matrix_utils.is_e2ee_enabled", return_value=True),
+        patch(
+            "mmrelay.matrix_utils._ensure_own_device_cross_signed",
+            ensure_cross_signed,
+        ),
+        patch(
+            "mmrelay.matrix_utils.get_e2ee_store_dir",
+            return_value=TEST_E2EE_STORE_PATH,
+        ),
+        patch("os.makedirs"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await login_matrix_bot(
+            homeserver="https://matrix.org",
+            username="@bot:matrix.org",
+            password=TEST_LOGIN_CREDENTIAL,
+            logout_others=False,
+            config_for_paths={},
+        )
+
+    ensure_cross_signed.assert_awaited_once_with(
+        mock_client,
+        password=TEST_LOGIN_CREDENTIAL,
+    )
+    mock_client.close.assert_awaited_once()
+    assert any(
+        "Failed to close Matrix client after cancellation" in str(call.args[0])
+        for call in mock_logger.debug.call_args_list
+    )
 
 
 @pytest.mark.asyncio

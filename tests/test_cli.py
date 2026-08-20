@@ -119,6 +119,7 @@ class TestCLI(unittest.TestCase):
                 "@bot:matrix.org",
                 "--password",
                 "secret123",
+                "--reset-cross-signing",
             ],
         ):
             args = parse_arguments()
@@ -127,6 +128,7 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(args.homeserver, "https://matrix.org")
             self.assertEqual(args.username, "@bot:matrix.org")
             self.assertEqual(args.password, "secret123")
+            self.assertTrue(args.reset_cross_signing)
 
     def test_parse_arguments_auth_login_no_parameters(self):
         """Test parsing of auth login subcommand without parameters."""
@@ -137,6 +139,7 @@ class TestCLI(unittest.TestCase):
             self.assertIsNone(args.homeserver)
             self.assertIsNone(args.username)
             self.assertIsNone(args.password)
+            self.assertFalse(args.reset_cross_signing)
 
     @patch("mmrelay.cli._validate_credentials_json")
     @patch("mmrelay.config.os.makedirs")
@@ -1415,6 +1418,7 @@ def test_handle_auth_login_passes_explicit_config() -> None:
         homeserver="https://matrix.example",
         username="@bot:matrix.example",
         password=TEST_LOGIN_CREDENTIAL,
+        reset_cross_signing=True,
     )
     config_data = {"matrix": {"e2ee": {"enabled": True}}}
 
@@ -1424,9 +1428,7 @@ def test_handle_auth_login_passes_explicit_config() -> None:
         patch(
             "mmrelay.config.load_config_silently", return_value=config_data
         ) as mock_load_config,
-        patch(
-            "mmrelay.matrix_utils.login_matrix_bot", return_value=True
-        ) as mock_login,
+        patch("mmrelay.matrix_utils.login_matrix_bot", return_value=True) as mock_login,
     ):
         result = handle_auth_login(args)
 
@@ -1439,8 +1441,37 @@ def test_handle_auth_login_passes_explicit_config() -> None:
         password=TEST_LOGIN_CREDENTIAL,
         logout_others=False,
         config_for_paths=config_data,
+        reset_cross_signing=True,
     )
     mock_print.assert_not_called()
+
+
+def test_handle_auth_login_reports_configured_credentials_path(tmp_path) -> None:
+    """Report the credentials path selected by the same config used for login."""
+    credentials_path = tmp_path / "matrix-credentials.json"
+    credentials_path.write_text("{}", encoding="utf-8")
+    args = SimpleNamespace(
+        config="/custom/config.yaml",
+        homeserver=None,
+        username=None,
+        password=None,
+    )
+    config_data = {"matrix": {"credentials_path": str(credentials_path)}}
+
+    with (
+        patch.dict(os.environ, {"MMRELAY_CREDENTIALS_PATH": ""}),
+        patch("builtins.print") as mock_print,
+        patch("mmrelay.cli.ensure_directories"),
+        patch("mmrelay.config.check_e2ee_enabled_silently", return_value=False),
+        patch("mmrelay.config.load_config_silently", return_value=config_data),
+        patch("mmrelay.matrix_utils.login_matrix_bot", return_value=True),
+        patch("mmrelay.paths.get_credentials_path") as mock_default_credentials_path,
+    ):
+        result = handle_auth_login(args)
+
+    assert result == EXIT_CODE_SUCCESS
+    mock_default_credentials_path.assert_not_called()
+    mock_print.assert_any_call(f"✅ credentials.json saved: {credentials_path}")
 
 
 def test_handle_auth_login_continues_when_config_load_fails() -> None:
@@ -1459,9 +1490,7 @@ def test_handle_auth_login_continues_when_config_load_fails() -> None:
             "mmrelay.config.load_config_silently",
             side_effect=ValueError("Config load failed"),
         ) as mock_load_config,
-        patch(
-            "mmrelay.matrix_utils.login_matrix_bot", return_value=True
-        ) as mock_login,
+        patch("mmrelay.matrix_utils.login_matrix_bot", return_value=True) as mock_login,
     ):
         result = handle_auth_login(args)
 

@@ -666,9 +666,9 @@ class TestUncoveredMeshtasticUtils(unittest.TestCase):
             7.0,
         )
 
-    @patch("mmrelay.meshtastic_utils.ThreadPoolExecutor")
+    @patch("mmrelay.meshtastic.executors.DaemonThreadExecutor")
     def test_maybe_reset_ble_executor_handles_cancel_timeout_and_stale_executor_shutdown(
-        self, mock_thread_pool
+        self, mock_daemon_executor
     ):
         """BLE executor reset should cancel stale futures and shutdown old executors."""
         import mmrelay.meshtastic_utils as mu
@@ -690,7 +690,7 @@ class TestUncoveredMeshtasticUtils(unittest.TestCase):
         stale_future.result.side_effect = ConcurrentTimeoutError()
 
         replacement_executor = Mock()
-        mock_thread_pool.return_value = replacement_executor
+        mock_daemon_executor.return_value = replacement_executor
         created_executor = None
 
         try:
@@ -719,7 +719,7 @@ class TestUncoveredMeshtasticUtils(unittest.TestCase):
 
         stale_future.cancel.assert_called_once()
         stale_executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
-        mock_thread_pool.assert_called_once()
+        mock_daemon_executor.assert_called_once()
         self.assertIs(created_executor, replacement_executor)
 
     @patch("mmrelay.meshtastic_utils.logger")
@@ -1431,6 +1431,178 @@ class TestGetConnectTimeProbeSettings(unittest.TestCase):
         )
         self.assertEqual(enabled, DEFAULT_HEALTH_CHECK_ENABLED)
         self.assertEqual(timeout, float(DEFAULT_MESHTASTIC_OPERATION_TIMEOUT))
+
+
+def test_get_connect_probe_stabilization_deadline_prefers_latest_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connect probe should wait for the latest stabilization window."""
+    from mmrelay.meshtastic.connection import _get_connect_probe_stabilization_deadline
+
+    monkeypatch.setattr(mu, "_relay_startup_drain_deadline_monotonic_secs", 115.0)
+    monkeypatch.setattr(
+        mu, "_relay_reconnect_prestart_bootstrap_deadline_monotonic_secs", 105.0
+    )
+
+    deadline, window = _get_connect_probe_stabilization_deadline()
+
+    assert deadline == 115.0
+    assert window == "startup drain"
+
+
+@pytest.mark.parametrize(
+    ("startup_deadline", "reconnect_deadline"),
+    [(105.0, None), (None, 105.0)],
+    ids=("startup-drain", "reconnect-bootstrap"),
+)
+def test_connect_probe_delays_until_after_stabilization_window(
+    monkeypatch: pytest.MonkeyPatch,
+    startup_deadline: float | None,
+    reconnect_deadline: float | None,
+) -> None:
+    """Connect calibration traffic should not run while either window is active."""
+    from mmrelay.meshtastic import connection as connection_module
+
+    timer_instances: list[SimpleNamespace] = []
+
+    def _timer_factory(delay: float, callback: Any) -> SimpleNamespace:
+        timer = SimpleNamespace(
+            interval=delay,
+            function=callback,
+            daemon=False,
+            start=Mock(),
+            cancel=Mock(),
+        )
+        timer_instances.append(timer)
+        return timer
+
+    monkeypatch.setattr(
+        mu, "_relay_startup_drain_deadline_monotonic_secs", startup_deadline
+    )
+    monkeypatch.setattr(
+        mu,
+        "_relay_reconnect_prestart_bootstrap_deadline_monotonic_secs",
+        reconnect_deadline,
+    )
+    monkeypatch.setattr(mu.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(connection_module.threading, "Timer", _timer_factory)
+    monkeypatch.setattr(
+        mu, "_get_connect_time_probe_settings", lambda *_args: (True, 30.0)
+    )
+    submit_probe = Mock()
+    monkeypatch.setattr(mu, "_submit_metadata_probe", submit_probe)
+    client = SimpleNamespace(localNode=object(), sendData=Mock())
+
+    mu._schedule_connect_time_calibration_probe(
+        client,
+        connection_type=CONNECTION_TYPE_BLE,
+        active_config={"meshtastic": {}},
+    )
+
+    assert len(timer_instances) == 1
+    assert timer_instances[0].interval == pytest.approx(7.0)
+    timer_instances[0].start.assert_called_once_with()
+    submit_probe.assert_not_called()
+
+
+def test_connect_probe_applies_remaining_delay_after_window_just_ended(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The post-window delay starts at the deadline, not at scheduling time."""
+    from mmrelay.meshtastic import connection as connection_module
+
+    timer_instances: list[SimpleNamespace] = []
+
+    def _timer_factory(delay: float, callback: Any) -> SimpleNamespace:
+        timer = SimpleNamespace(
+            interval=delay,
+            function=callback,
+            daemon=False,
+            start=Mock(),
+            cancel=Mock(),
+        )
+        timer_instances.append(timer)
+        return timer
+
+    monkeypatch.setattr(mu, "_relay_startup_drain_deadline_monotonic_secs", 99.0)
+    monkeypatch.setattr(
+        mu, "_relay_reconnect_prestart_bootstrap_deadline_monotonic_secs", None
+    )
+    monkeypatch.setattr(mu.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(connection_module.threading, "Timer", _timer_factory)
+    monkeypatch.setattr(
+        mu, "_get_connect_time_probe_settings", lambda *_args: (True, 30.0)
+    )
+    submit_probe = Mock()
+    monkeypatch.setattr(mu, "_submit_metadata_probe", submit_probe)
+    client = SimpleNamespace(localNode=object(), sendData=Mock())
+
+    mu._schedule_connect_time_calibration_probe(
+        client,
+        connection_type=CONNECTION_TYPE_BLE,
+        active_config={"meshtastic": {}},
+    )
+
+    assert len(timer_instances) == 1
+    assert timer_instances[0].interval == pytest.approx(1.0)
+    timer_instances[0].start.assert_called_once_with()
+    submit_probe.assert_not_called()
+
+
+def test_delayed_connect_probe_rechecks_extended_stabilization_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replacement window must keep an already-timed probe from firing early."""
+    from mmrelay.meshtastic import connection as connection_module
+
+    timer_instances: list[SimpleNamespace] = []
+    now = [100.0]
+
+    def _timer_factory(delay: float, callback: Any) -> SimpleNamespace:
+        timer = SimpleNamespace(
+            interval=delay,
+            function=callback,
+            daemon=False,
+            start=Mock(),
+            cancel=Mock(),
+        )
+        timer_instances.append(timer)
+        return timer
+
+    monkeypatch.setattr(mu, "_relay_startup_drain_deadline_monotonic_secs", 105.0)
+    monkeypatch.setattr(
+        mu, "_relay_reconnect_prestart_bootstrap_deadline_monotonic_secs", None
+    )
+    monkeypatch.setattr(mu.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(connection_module.threading, "Timer", _timer_factory)
+    monkeypatch.setattr(
+        mu, "_get_connect_time_probe_settings", lambda *_args: (True, 30.0)
+    )
+    submit_probe = Mock(return_value=Mock())
+    monkeypatch.setattr(mu, "_submit_metadata_probe", submit_probe)
+    client = SimpleNamespace(localNode=object(), sendData=Mock())
+    monkeypatch.setattr(mu, "meshtastic_client", client)
+
+    mu._schedule_connect_time_calibration_probe(
+        client,
+        connection_type=CONNECTION_TYPE_BLE,
+        active_config={"meshtastic": {}},
+    )
+    assert timer_instances[0].interval == pytest.approx(7.0)
+
+    monkeypatch.setattr(mu, "_relay_startup_drain_deadline_monotonic_secs", 110.0)
+    now[0] = 107.0
+    timer_instances[0].function()
+
+    assert len(timer_instances) == 2
+    assert timer_instances[1].interval == pytest.approx(5.0)
+    timer_instances[1].start.assert_called_once_with()
+    submit_probe.assert_not_called()
+
+    now[0] = 112.0
+    timer_instances[1].function()
+
+    submit_probe.assert_called_once()
 
 
 class TestScheduleConnectTimeCalibrationProbe(unittest.TestCase):

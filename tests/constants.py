@@ -34,6 +34,7 @@ TEST_BOT_USER_ID: Final[str] = "@bot:matrix.org"
 TEST_BOT_USER_ID_EXAMPLE: Final[str] = "@bot:example.org"
 TEST_USER_ID: Final[str] = "@user:matrix.org"
 TEST_LOGIN_CREDENTIAL: Final[str] = "password"
+TEST_MATRIX_SESSION_CREDENTIAL: Final[str] = "token"
 
 # Matrix room IDs
 TEST_ROOM_ID: Final[str] = "!room:matrix.org"
@@ -42,6 +43,15 @@ TEST_ROOM_ID_2: Final[str] = "!room2:matrix.org"
 
 # Matrix event IDs
 TEST_EVENT_ID: Final[str] = "$event123"
+
+# Expected mindroom-nio AsyncClientConfig recovery defaults (single source of truth
+# for tests that assert MMRelay leaves limited-timeline recovery disabled).
+# Update here when the pinned provider changes these defaults.
+MINDROOM_BACKFILL_LIMITED_TIMELINES_DEFAULT: Final[bool] = False
+MINDROOM_BACKFILL_PERSIST_RECOVERY_DEFAULT: Final[bool | None] = None
+
+# Expected schema version for the pinned mindroom-nio MatrixStore.
+MINDROOM_STORE_VERSION: Final[int] = 10
 
 # Test message delay values for message queue testing
 # These are intentionally different from production to test edge cases
