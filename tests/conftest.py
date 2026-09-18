@@ -580,6 +580,7 @@ def reset_meshtastic_globals():
         ),
         "_ble_executor": getattr(mu, "_ble_executor", None),
         "_metadata_executor": getattr(mu, "_metadata_executor", None),
+        "connection_suspended": getattr(mu, "connection_suspended", False),
     }
 
     # Reset mutable globals to a clean state; keep logger and event_loop usable
@@ -588,6 +589,7 @@ def reset_meshtastic_globals():
     mu.meshtastic_iface = None
     mu.reconnecting = False
     mu.shutting_down = False
+    mu.connection_suspended = False
     mu.reconnect_task = None
     mu.reconnect_task_future = None
     mu.subscribed_to_messages = False

@@ -137,6 +137,7 @@ __all__ = [
     "asyncio",
     "check_connection",
     "connect_meshtastic",
+    "connection_suspended",
     "ensure_meshtastic_callbacks_subscribed",
     "get_longname",
     "get_meshtastic_config_value",
@@ -164,6 +165,8 @@ __all__ = [
     "serial",
     "serial_port_exists",
     "shutdown_shared_executors",
+    "resume_meshtastic_connection",
+    "suspend_meshtastic_connection",
     "sync_name_tables_if_changed",
     "time",
     "unsubscribe_meshtastic_callbacks",
@@ -444,6 +447,7 @@ _CONNECT_ATTEMPT_BLE_WAIT_MAX_SECS = (
 
 reconnecting = False
 shutting_down = False
+connection_suspended = False
 
 reconnect_task: "asyncio.Task[Any] | Future[Any] | None" = (
     None  # asyncio.Task when scheduled from async, concurrent.futures.Future when scheduled via run_coroutine_threadsafe
@@ -569,6 +573,8 @@ from mmrelay.meshtastic.events import (
     on_lost_meshtastic_connection,
     on_meshtastic_message,
     reconnect,
+    resume_meshtastic_connection,
+    suspend_meshtastic_connection,
 )
 from mmrelay.meshtastic.executors import (
     _clear_ble_future,

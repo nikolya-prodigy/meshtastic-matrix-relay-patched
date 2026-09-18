@@ -282,6 +282,17 @@ def test_should_send_message_returns_false_when_reconnecting() -> None:
         assert queue._should_send_message() is False
 
 
+def test_should_send_message_returns_false_when_manually_disconnected() -> None:
+    queue = MessageQueue()
+    client = MagicMock()
+    with (
+        patch.object(meshtastic_utils, "connection_suspended", True),
+        patch.object(meshtastic_utils, "reconnecting", False),
+        patch.object(meshtastic_utils, "meshtastic_client", client),
+    ):
+        assert queue._should_send_message() is False
+
+
 def test_should_send_message_returns_false_when_client_reports_disconnected() -> None:
     queue = MessageQueue()
     client = MagicMock()

@@ -32,6 +32,13 @@ health - Show mesh health summary
 nodes [online|limit|all] - List known Meshtastic nodes
 find <query> - Search known Meshtastic nodes and renumber the result
 node <number|node-id|name> - Show details for a node
+node reboot confirm - Reboot the bridge's local Meshtastic node
+node shutdown confirm - Shut down the bridge's local Meshtastic node
+disconnect - Release the node connection without stopping the bridge
+connect - Resume the node connection in the background
+lora tx status - Show whether LoRa transmission is enabled
+lora tx off confirm - Disable LoRa transmission while keeping reception enabled
+lora tx on - Enable LoRa transmission
 signal <number|node-id|name> - Show link quality for a node
 trace <number|node-id|name> - Trace route to a node
 telemetry <number|node-id|name> [device|environment|air|power|local] - Request telemetry from a node
@@ -2231,6 +2238,151 @@ async def _handle_writers_command(room: Any) -> bool:
     return True
 
 
+def _get_local_node(interface: Any) -> Any | None:
+    return getattr(interface, "localNode", None) if interface is not None else None
+
+
+async def _handle_node_power_command(room: Any, args: str) -> bool:
+    tokens = args.casefold().split()
+    if not tokens or tokens[0] not in {"reboot", "shutdown"}:
+        return False
+
+    action = tokens[0]
+    expected = f"node {action} confirm"
+    if tokens != [action, "confirm"]:
+        await send_control_message(
+            room.room_id,
+            f"This command controls the local Meshtastic node.\n\n"
+            f"To continue, type exactly: {expected}",
+        )
+        return True
+
+    local_node = _get_local_node(_get_interface())
+    method = getattr(local_node, action, None)
+    if local_node is None or not callable(method):
+        await send_control_message(
+            room.room_id, "Local Meshtastic node is not connected."
+        )
+        return True
+
+    try:
+        await asyncio.to_thread(method, 5)
+        if action == "shutdown":
+            from mmrelay import meshtastic_utils
+
+            await meshtastic_utils.suspend_meshtastic_connection()
+            message = (
+                "Shutdown command sent. The node will power off in 5 seconds.\n"
+                "Automatic reconnect is suspended; use connect after powering it on."
+            )
+        else:
+            message = (
+                "Reboot command sent. The node will restart in 5 seconds; "
+                "the bridge will reconnect automatically."
+            )
+        await send_control_message(room.room_id, message)
+    except Exception:  # noqa: BLE001 - device API boundary
+        facade.logger.exception("Failed to %s local Meshtastic node", action)
+        await send_control_message(room.room_id, f"Failed to {action} the local node.")
+    return True
+
+
+async def _handle_disconnect_command(room: Any) -> bool:
+    from mmrelay import meshtastic_utils
+
+    was_connected = await meshtastic_utils.suspend_meshtastic_connection()
+    state = "Connection closed." if was_connected else "No active connection."
+    await send_control_message(
+        room.room_id,
+        f"Meshtastic connection suspended. {state}\n"
+        "The bridge remains online in Matrix and will not reconnect until connect is used.",
+    )
+    return True
+
+
+async def _handle_connect_command(room: Any) -> bool:
+    from mmrelay import meshtastic_utils
+
+    state = await meshtastic_utils.resume_meshtastic_connection()
+    messages = {
+        "connected": "Meshtastic is already connected.",
+        "connecting": "Meshtastic connection is already in progress.",
+        "started": "Meshtastic connection started in the background.",
+    }
+    await send_control_message(room.room_id, messages[state])
+    return True
+
+
+async def _handle_lora_command(room: Any, args: str) -> bool:
+    tokens = args.casefold().split()
+    if not tokens or tokens[0] != "tx":
+        await send_control_message(
+            room.room_id,
+            "Usage: lora tx status | lora tx on | lora tx off confirm",
+        )
+        return True
+
+    interface = _get_interface()
+    local_node = _get_local_node(interface)
+    local_config = getattr(local_node, "localConfig", None)
+    lora_config = getattr(local_config, "lora", None)
+    if local_node is None or lora_config is None:
+        await send_control_message(
+            room.room_id, "Local Meshtastic node configuration is not available."
+        )
+        return True
+
+    current = bool(getattr(lora_config, "tx_enabled", False))
+    if tokens == ["tx", "status"]:
+        await send_control_message(
+            room.room_id,
+            f"LoRa transmission: {'enabled' if current else 'disabled'}\n"
+            "LoRa reception remains available while transmission is disabled.",
+        )
+        return True
+
+    if tokens == ["tx", "off"]:
+        await send_control_message(
+            room.room_id,
+            "Disabling LoRa TX prevents all radio transmissions.\n\n"
+            "To continue, type exactly: lora tx off confirm",
+        )
+        return True
+    if tokens == ["tx", "off", "confirm"]:
+        enabled = False
+    elif tokens == ["tx", "on"]:
+        enabled = True
+    else:
+        await send_control_message(
+            room.room_id,
+            "Usage: lora tx status | lora tx on | lora tx off confirm",
+        )
+        return True
+
+    write_config = getattr(local_node, "writeConfig", None)
+    if not callable(write_config):
+        await send_control_message(
+            room.room_id, "This Meshtastic client cannot update LoRa configuration."
+        )
+        return True
+
+    try:
+        lora_config.tx_enabled = enabled
+        await asyncio.to_thread(write_config, "lora")
+    except Exception:  # noqa: BLE001 - device API boundary
+        lora_config.tx_enabled = current
+        facade.logger.exception("Failed to update LoRa TX setting")
+        await send_control_message(room.room_id, "Failed to update LoRa transmission.")
+        return True
+
+    await send_control_message(
+        room.room_id,
+        f"LoRa transmission {'enabled' if enabled else 'disabled'}.\n"
+        "The node may briefly restart while applying the setting.",
+    )
+    return True
+
+
 async def _handle_status_command(room: Any) -> bool:
     client = getattr(facade, "matrix_client", None)
     interface = _get_interface()
@@ -2240,11 +2392,19 @@ async def _handle_status_command(room: Any) -> bool:
     queue_status = _queue_status()
     last_heard = mesh_summary.get("last_heard")
 
+    from mmrelay import meshtastic_utils
+
+    suspended = bool(meshtastic_utils.connection_suspended)
+    meshtastic_state = (
+        "suspended"
+        if suspended
+        else ("connected" if interface is not None else "not connected")
+    )
     lines = [
         "Meshtastic bridge status",
         "",
         f"matrix: {'connected' if client is not None else 'not connected'}",
-        f"meshtastic: {'connected' if interface is not None else 'not connected'}",
+        f"meshtastic: {meshtastic_state}",
         f"node: {_local_node_title(interface)}",
         f"nodes: {mesh_summary['nodes']} / Online {mesh_summary['online']}",
         (
@@ -2404,7 +2564,21 @@ async def handle_control_room_message(room: Any, event: Any) -> bool:
         await _send_control_reaction(room, event, "✅")
         return handled
     if command.casefold() == "node":
-        handled = await _handle_node_command(room, event, args)
+        handled = await _handle_node_power_command(room, args)
+        if not handled:
+            handled = await _handle_node_command(room, event, args)
+        await _send_control_reaction(room, event, "✅")
+        return handled
+    if command.casefold() == "disconnect":
+        handled = await _handle_disconnect_command(room)
+        await _send_control_reaction(room, event, "✅")
+        return handled
+    if command.casefold() == "connect":
+        handled = await _handle_connect_command(room)
+        await _send_control_reaction(room, event, "✅")
+        return handled
+    if command.casefold() == "lora":
+        handled = await _handle_lora_command(room, args)
         await _send_control_reaction(room, event, "✅")
         return handled
     if command.casefold() == "signal":

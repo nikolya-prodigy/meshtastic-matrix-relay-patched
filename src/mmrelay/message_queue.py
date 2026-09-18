@@ -944,9 +944,7 @@ class MessageQueue:
             error_reason = (
                 routing.get("errorReason") if isinstance(routing, dict) else None
             )
-            reaction_key = (
-                "nak" if error_reason and error_reason != "NONE" else "ack"
-            )
+            reaction_key = "nak" if error_reason and error_reason != "NONE" else "ack"
             self._send_delivery_reaction(delivery_info, reaction_key)
 
         return _on_response
@@ -1024,7 +1022,15 @@ class MessageQueue:
         """
         # Import here to avoid circular imports
         try:
-            from mmrelay.meshtastic_utils import meshtastic_client, reconnecting
+            from mmrelay.meshtastic_utils import (
+                connection_suspended,
+                meshtastic_client,
+                reconnecting,
+            )
+
+            if connection_suspended:
+                logger.debug("Not sending - connection is manually suspended")
+                return False
 
             # Don't send during reconnection
             if reconnecting:

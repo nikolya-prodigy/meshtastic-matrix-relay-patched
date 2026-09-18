@@ -32,6 +32,12 @@ def _interface() -> SimpleNamespace:
         _send_data_with_wait=MagicMock(return_value=SimpleNamespace(id=1234)),
         localNode=SimpleNamespace(
             nodeNum=1,
+            localConfig=SimpleNamespace(
+                lora=SimpleNamespace(tx_enabled=True),
+            ),
+            reboot=MagicMock(),
+            shutdown=MagicMock(),
+            writeConfig=MagicMock(),
             channels=[
                 SimpleNamespace(
                     role="PRIMARY",
@@ -42,7 +48,7 @@ def _interface() -> SimpleNamespace:
                     ),
                 ),
                 SimpleNamespace(settings=SimpleNamespace(name="Anapa")),
-            ]
+            ],
         ),
         nodes={
             "old": {
@@ -71,7 +77,7 @@ def _interface() -> SimpleNamespace:
                     "barometricPressure": 1012.8,
                 },
             },
-        }
+        },
     )
     interface.getMyNodeInfo = MagicMock(
         return_value={
@@ -163,7 +169,9 @@ async def test_nodes_command_builds_stable_numbered_cache(monkeypatch) -> None:
     assert "last:" in sent[0]
     assert "OLD Old Node" not in sent[0]
 
-    entry = control._NODE_INDEX_CACHE[("!control:example.org", "@nikolya:example.org")][0]
+    entry = control._NODE_INDEX_CACHE[("!control:example.org", "@nikolya:example.org")][
+        0
+    ]
     assert entry.node_id == "!new"
 
 
@@ -242,7 +250,9 @@ async def test_dm_command_accepts_node_id_without_cached_nodes(monkeypatch) -> N
     monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
     monkeypatch.setattr(facade, "ensure_dm_room", ensure_dm_room)
 
-    handled = await control.handle_control_room_message(_room(), _event("dm !new hello"))
+    handled = await control.handle_control_room_message(
+        _room(), _event("dm !new hello")
+    )
 
     assert handled is True
     ensure_dm_room.assert_awaited_once()
@@ -307,7 +317,9 @@ async def test_find_command_searches_and_renumbers_cache(monkeypatch) -> None:
     assert "link:" in sent[-1]
     assert "last:" in sent[-1]
 
-    entry = control._NODE_INDEX_CACHE[("!control:example.org", "@nikolya:example.org")][0]
+    entry = control._NODE_INDEX_CACHE[("!control:example.org", "@nikolya:example.org")][
+        0
+    ]
     assert entry.number == 1
     assert entry.node_id == "!old"
 
@@ -643,7 +655,9 @@ async def test_weather_command_shows_single_node_by_cached_number(monkeypatch) -
 async def test_weather_command_shows_single_node_by_full_name(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
 
-    handled = await control.handle_control_room_message(_room(), _event("weather New Node"))
+    handled = await control.handle_control_room_message(
+        _room(), _event("weather New Node")
+    )
 
     assert handled is True
     assert "Weather for NEW New Node" in sent[-1]
@@ -654,7 +668,9 @@ async def test_weather_command_shows_single_node_by_full_name(monkeypatch) -> No
 async def test_weather_command_reports_missing_environment_metrics(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
 
-    handled = await control.handle_control_room_message(_room(), _event("weather Old Node"))
+    handled = await control.handle_control_room_message(
+        _room(), _event("weather Old Node")
+    )
 
     assert handled is True
     assert "No environment sensor readings found for OLD Old Node." in sent[-1]
@@ -664,7 +680,9 @@ async def test_weather_command_reports_missing_environment_metrics(monkeypatch) 
 async def test_weather_nodes_is_treated_as_node_lookup(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
 
-    handled = await control.handle_control_room_message(_room(), _event("weather nodes"))
+    handled = await control.handle_control_room_message(
+        _room(), _event("weather nodes")
+    )
 
     assert handled is True
     assert "Node not found." in sent[-1]
@@ -755,6 +773,126 @@ async def test_status_command_reports_bridge_summary(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_node_reboot_requires_exact_confirmation(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+
+    handled = await control.handle_control_room_message(_room(), _event("node reboot"))
+
+    assert handled is True
+    interface.localNode.reboot.assert_not_called()
+    assert "node reboot confirm" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_node_reboot_uses_local_admin_api(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+
+    handled = await control.handle_control_room_message(
+        _room(), _event("node reboot confirm")
+    )
+
+    assert handled is True
+    interface.localNode.reboot.assert_called_once_with(5)
+    assert "Reboot command sent" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_node_shutdown_suspends_reconnect(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    suspend = AsyncMock(return_value=True)
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+    monkeypatch.setattr(meshtastic_utils, "suspend_meshtastic_connection", suspend)
+
+    handled = await control.handle_control_room_message(
+        _room(), _event("node shutdown confirm")
+    )
+
+    assert handled is True
+    interface.localNode.shutdown.assert_called_once_with(5)
+    suspend.assert_awaited_once_with()
+    assert "Automatic reconnect is suspended" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_disconnect_releases_node_connection(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    suspend = AsyncMock(return_value=True)
+    monkeypatch.setattr(meshtastic_utils, "suspend_meshtastic_connection", suspend)
+
+    handled = await control.handle_control_room_message(_room(), _event("disconnect"))
+
+    assert handled is True
+    suspend.assert_awaited_once_with()
+    assert "Meshtastic connection suspended" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_connect_starts_background_connection(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    resume = AsyncMock(return_value="started")
+    monkeypatch.setattr(meshtastic_utils, "resume_meshtastic_connection", resume)
+
+    handled = await control.handle_control_room_message(_room(), _event("connect"))
+
+    assert handled is True
+    resume.assert_awaited_once_with()
+    assert "started in the background" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_lora_tx_off_requires_confirmation(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+
+    handled = await control.handle_control_room_message(_room(), _event("lora tx off"))
+
+    assert handled is True
+    assert interface.localNode.localConfig.lora.tx_enabled is True
+    interface.localNode.writeConfig.assert_not_called()
+    assert "lora tx off confirm" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_lora_tx_can_be_disabled_and_enabled(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+
+    await control.handle_control_room_message(_room(), _event("lora tx off confirm"))
+    assert interface.localNode.localConfig.lora.tx_enabled is False
+    interface.localNode.writeConfig.assert_called_once_with("lora")
+    assert "LoRa transmission disabled" in sent[-1]
+
+    interface.localNode.writeConfig.reset_mock()
+    await control.handle_control_room_message(_room(), _event("lora tx on"))
+    assert interface.localNode.localConfig.lora.tx_enabled is True
+    interface.localNode.writeConfig.assert_called_once_with("lora")
+    assert "LoRa transmission enabled" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_lora_tx_write_failure_restores_cached_setting(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    interface = _interface()
+    interface.localNode.writeConfig.side_effect = RuntimeError("write failed")
+    monkeypatch.setattr(meshtastic_utils, "meshtastic_client", interface)
+
+    handled = await control.handle_control_room_message(
+        _room(), _event("lora tx off confirm")
+    )
+
+    assert handled is True
+    assert interface.localNode.localConfig.lora.tx_enabled is True
+    assert "Failed to update" in sent[-1]
+
+
+@pytest.mark.asyncio
 async def test_refresh_command_updates_managed_rooms(monkeypatch) -> None:
     sent = _capture_messages(monkeypatch)
     client = object()
@@ -838,6 +976,5 @@ async def test_send_control_help_bolds_command_names(monkeypatch) -> None:
     )
     assert (
         "<li><strong>telemetry &lt;number|node-id|name&gt; "
-        "[device|environment|air|power|local]</strong>"
-        in content["formatted_body"]
+        "[device|environment|air|power|local]</strong>" in content["formatted_body"]
     )

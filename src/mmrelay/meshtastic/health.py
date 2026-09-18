@@ -773,7 +773,9 @@ async def check_connection() -> None:
     await facade.asyncio.sleep(initial_delay)
 
     while not facade.shutting_down:
-        if facade.meshtastic_client and not facade.reconnecting:
+        if facade.connection_suspended:
+            facade.logger.debug("Skipping connection check - manually disconnected")
+        elif facade.meshtastic_client and not facade.reconnecting:
             await _execute_health_probe(
                 facade.meshtastic_client, connection_type, probe_timeout
             )

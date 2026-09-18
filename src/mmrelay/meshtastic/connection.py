@@ -633,7 +633,11 @@ def connect_meshtastic(
                 "connect_meshtastic() already in progress; waiting for active attempt to finish"
             )
 
-            while facade._connect_attempt_in_progress and not facade.shutting_down:
+            while (
+                facade._connect_attempt_in_progress
+                and not facade.shutting_down
+                and not facade.connection_suspended
+            ):
                 remaining_wait = wait_deadline - facade.time.monotonic()
                 if remaining_wait <= 0:
                     break
@@ -642,6 +646,11 @@ def connect_meshtastic(
                 )
             if facade.shutting_down:
                 facade.logger.debug("Shutdown in progress. Not attempting to connect.")
+                return None
+            if facade.connection_suspended:
+                facade.logger.debug(
+                    "Manual disconnect in progress. Not attempting to connect."
+                )
                 return None
             if (
                 facade._connect_attempt_in_progress
@@ -681,6 +690,9 @@ def _connect_meshtastic_impl(
     """
     if facade.shutting_down:
         facade.logger.debug("Shutdown in progress. Not attempting to connect.")
+        return None
+    if facade.connection_suspended:
+        facade.logger.debug("Manual disconnect in progress. Not attempting to connect.")
         return None
 
     if facade.reconnecting and not force_connect:
@@ -820,6 +832,7 @@ def _connect_meshtastic_impl(
         not successful
         and (retry_limit == 0 or attempts <= retry_limit)
         and not facade.shutting_down
+        and not facade.connection_suspended
     ):
         # Initialize before try block to avoid unbound variable errors
         ble_address: str | None = None
@@ -1698,9 +1711,9 @@ def _connect_meshtastic_impl(
 
                 # Publish the active client only after per-connection timing state
                 # has been reset, so callbacks cannot observe stale skew windows.
-                if facade.shutting_down:
+                if facade.shutting_down or facade.connection_suspended:
                     facade.logger.debug(
-                        "Shutdown started during connect setup; closing new client before publish"
+                        "Shutdown or manual disconnect started during connect setup; closing new client before publish"
                     )
                     try:
                         if client is facade.meshtastic_iface:

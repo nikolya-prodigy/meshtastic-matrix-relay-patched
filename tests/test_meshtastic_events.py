@@ -98,6 +98,18 @@ class TestOnLostMeshtasticConnection:
         on_lost_meshtastic_connection()
         mu.shutting_down = False
 
+    def test_manual_disconnect_does_not_reconnect(self):
+        from mmrelay.meshtastic.events import on_lost_meshtastic_connection
+
+        mu.connection_suspended = True
+        mu.meshtastic_client = MagicMock()
+
+        with patch.object(mu.asyncio, "run_coroutine_threadsafe") as schedule:
+            on_lost_meshtastic_connection()
+
+        schedule.assert_not_called()
+        assert mu.reconnecting is False
+
     def test_reconnecting_returns(self):
         from mmrelay.meshtastic.events import on_lost_meshtastic_connection
 
@@ -359,3 +371,59 @@ class TestReconnect:
         mu.shutting_down = True
         await reconnect()
         assert mu.reconnecting is False
+
+    @pytest.mark.asyncio
+    async def test_manual_disconnect_skips(self):
+        from mmrelay.meshtastic.events import reconnect
+
+        mu.connection_suspended = True
+        await reconnect()
+        assert mu.reconnecting is False
+
+
+@pytest.mark.usefixtures("reset_meshtastic_globals")
+class TestManualConnectionControl:
+    @pytest.mark.asyncio
+    async def test_suspend_closes_client_and_cancels_reconnect(self):
+        from mmrelay.meshtastic.events import suspend_meshtastic_connection
+
+        client = MagicMock()
+        reconnect_task = MagicMock()
+        reconnect_task.done.return_value = False
+        mu.meshtastic_client = client
+        mu._relay_active_client_id = id(client)
+        mu.reconnect_task = reconnect_task
+        mu.reconnecting = True
+
+        result = await suspend_meshtastic_connection()
+
+        assert result is True
+        assert mu.connection_suspended is True
+        assert mu.meshtastic_client is None
+        assert mu._relay_active_client_id is None
+        assert mu.reconnecting is False
+        reconnect_task.cancel.assert_called_once_with()
+        client.close.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_resume_starts_reconnect_task(self):
+        from mmrelay.meshtastic.events import resume_meshtastic_connection
+
+        reconnect_coro = MagicMock()
+        reconnect_task = MagicMock()
+        mu.connection_suspended = True
+        mu.meshtastic_client = None
+        mu.reconnecting = False
+
+        reconnect = MagicMock(return_value=reconnect_coro)
+        with (
+            patch.object(mu, "reconnect", new=reconnect),
+            patch.object(mu.asyncio, "create_task", return_value=reconnect_task),
+        ):
+            result = await resume_meshtastic_connection()
+
+        assert result == "started"
+        assert mu.connection_suspended is False
+        assert mu.reconnecting is True
+        assert mu.reconnect_task is reconnect_task
+        reconnect.assert_called_once_with()

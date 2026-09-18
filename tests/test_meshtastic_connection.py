@@ -223,6 +223,13 @@ class TestConnectMeshtastic:
         assert result is None
         mu.shutting_down = False
 
+    def test_manual_disconnect_returns_none(self):
+        from mmrelay.meshtastic.connection import connect_meshtastic
+
+        mu.connection_suspended = True
+        result = connect_meshtastic()
+        assert result is None
+
     def test_reconnecting_returns_none(self):
         from mmrelay.meshtastic.connection import _connect_meshtastic_impl
 

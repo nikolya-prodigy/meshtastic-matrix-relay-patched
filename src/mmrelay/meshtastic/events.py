@@ -31,6 +31,8 @@ __all__ = [
     "on_lost_meshtastic_connection",
     "on_meshtastic_message",
     "reconnect",
+    "resume_meshtastic_connection",
+    "suspend_meshtastic_connection",
 ]
 
 
@@ -381,6 +383,10 @@ def _reset_ble_degraded_state_after_disconnect(
 
 
 def _schedule_reconnect_after_disconnect() -> None:
+    if facade.connection_suspended:
+        facade.reconnecting = False
+        facade.logger.info("Automatic reconnect is disabled by manual disconnect")
+        return
     if facade.event_loop and not facade.event_loop.is_closed():
         facade.reconnecting = True
         reconnect_coro = facade.reconnect()
@@ -402,6 +408,57 @@ def _schedule_reconnect_after_disconnect() -> None:
         facade.logger.error(
             "Cannot schedule reconnect because the event loop is unavailable"
         )
+
+
+async def suspend_meshtastic_connection() -> bool:
+    """Close the active radio connection and suppress automatic reconnects."""
+    facade.connection_suspended = True
+
+    for task in (facade.reconnect_task, facade.reconnect_task_future):
+        if task is not None and not task.done():
+            task.cancel()
+    facade.reconnect_task = None
+    facade.reconnect_task_future = None
+    facade.reconnecting = False
+
+    with facade.meshtastic_lock:
+        client = facade.meshtastic_client
+        is_ble = client is not None and client is facade.meshtastic_iface
+        facade.meshtastic_client = None
+        facade._relay_active_client_id = None
+        if is_ble:
+            facade.meshtastic_iface = None
+
+    if client is None:
+        return False
+
+    def _close() -> None:
+        try:
+            if is_ble:
+                facade._disconnect_ble_interface(client, reason="manual disconnect")
+            else:
+                client.close()
+        except Exception:  # noqa: BLE001 - connection teardown boundary
+            facade.logger.exception("Failed to close manually suspended connection")
+
+    await facade.asyncio.to_thread(_close)
+    facade.logger.info("Meshtastic connection manually suspended")
+    return True
+
+
+async def resume_meshtastic_connection() -> str:
+    """Enable radio connectivity and start a background reconnect attempt."""
+    facade.connection_suspended = False
+    if facade.meshtastic_client is not None:
+        return "connected"
+    if facade.reconnecting:
+        return "connecting"
+
+    facade.reconnecting = True
+    task = facade.asyncio.create_task(facade.reconnect())
+    facade.reconnect_task = task
+    facade.logger.info("Manual Meshtastic reconnect requested")
+    return "started"
 
 
 def _schedule_startup_drain_deadline_cleanup(startup_drain_deadline: float) -> None:
@@ -484,6 +541,11 @@ def on_lost_meshtastic_connection(
         if facade.shutting_down:
             facade.logger.debug("Shutdown in progress. Not attempting to reconnect.")
             return
+        if facade.connection_suspended:
+            facade.logger.debug(
+                "Ignoring connection-lost event while manually disconnected"
+            )
+            return
         active_client = facade.meshtastic_client
         active_client_id = facade._relay_active_client_id
         if (
@@ -553,7 +615,7 @@ async def reconnect() -> None:
     """
     backoff_time = facade.DEFAULT_BACKOFF_TIME
     try:
-        while not facade.shutting_down:
+        while not facade.shutting_down and not facade.connection_suspended:
             try:
                 facade.logger.info(
                     f"Reconnection attempt starting in {backoff_time} seconds..."
