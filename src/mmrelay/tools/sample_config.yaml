@@ -55,6 +55,42 @@ meshtastic_portals:
     alias: meshtastic-control
     send_welcome_on_start: true
     allow_commands_in_portal_rooms: false
+    alerts:
+      # Operational alerts are sent only to the managed control room.
+      enabled: false
+      check_interval_seconds: 60
+      initial_delay_seconds: 30
+      # Repeat an unresolved alert no more often than this.
+      cooldown_seconds: 3600
+      recovery_notifications: true
+      connection:
+        enabled: true
+        # Avoid a false alert while reconnecting after a manual `connect`.
+        grace_seconds: 120
+      battery:
+        enabled: true
+        threshold_percent: 20
+        recovery_percent: 25
+        # Ignore stale remote NodeDB entries; the local node is always checked.
+        online_only: true
+      queue:
+        enabled: true
+        threshold: 10
+        recovery_threshold: 3
+      mesh_silence:
+        enabled: true
+        timeout_seconds: 3600
+        startup_grace_seconds: 900
+      channel_utilization:
+        enabled: true
+        threshold_percent: 40
+        recovery_percent: 30
+      lora_tx_disabled:
+        enabled: true
+      mqtt:
+        enabled: true
+        probe_interval_seconds: 300
+        probe_timeout_seconds: 12
   space:
     enabled: true
     name: Meshtastic

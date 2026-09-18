@@ -861,6 +861,13 @@ def on_meshtastic_message(packet: dict[str, Any], interface: Any) -> None:
             )
         return
 
+    # Alert monitoring tracks actual inbound mesh traffic. Local Admin API
+    # responses (including the MQTT probe) must not keep the mesh alive.
+    sender_num = _parse_node_number(packet.get("from") or packet.get("fromId"))
+    local_num = _parse_node_number(getattr(interface.myInfo, "my_node_num", None))
+    if sender_num is not None and sender_num != local_num:
+        facade.last_meshtastic_packet_monotonic = facade.time.monotonic()
+
     decoded = packet.get("decoded")
     if not isinstance(decoded, dict):
         decoded = {}

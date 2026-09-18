@@ -43,10 +43,10 @@ from mmrelay.constants.config import (
     CONFIG_SECTION_DATABASE_LEGACY,
     CONFIG_SECTION_LOGGING,
     CONFIG_SECTION_MESHTASTIC,
-    REQUIRED_CONFIG_SECTIONS_WITH_CREDENTIALS,
-    REQUIRED_CONFIG_SECTIONS_WITHOUT_CREDENTIALS,
     LEGACY_LAYOUT_FINAL_MIGRATION_SERIES,
     LEGACY_LAYOUT_REMOVAL_VERSION,
+    REQUIRED_CONFIG_SECTIONS_WITH_CREDENTIALS,
+    REQUIRED_CONFIG_SECTIONS_WITHOUT_CREDENTIALS,
 )
 from mmrelay.constants.network import (
     MATRIX_CLIENT_CLOSE_TIMEOUT_SECS,
@@ -61,6 +61,7 @@ from mmrelay.db_utils import (
     wipe_message_map,
 )
 from mmrelay.log_utils import get_logger
+from mmrelay.matrix.alerts import alerts_enabled, run_alert_monitor
 from mmrelay.matrix_utils import InviteMemberEvent  # type: ignore[attr-defined]
 from mmrelay.matrix_utils import (
     connect_matrix,
@@ -486,6 +487,7 @@ async def main(config: dict[str, Any]) -> None:
     ready_task: asyncio.Task[None] | None = None
     check_connection_task: asyncio.Task[Any] | None = None
     node_name_refresh_task: asyncio.Task[None] | None = None
+    alert_monitor_task: asyncio.Task[None] | None = None
     matrix_client: Any | None = None
     fatal_exception: BaseException | None = None
     plugins_cleanup_needed = False
@@ -867,8 +869,15 @@ async def main(config: dict[str, Any]) -> None:
                     fatal_exception = RuntimeError(continuous_health_exit_message)
                     _set_shutdown_flag()
                     raise fatal_exception
+        if alerts_enabled(config):
+            alert_monitor_task = asyncio.create_task(
+                run_alert_monitor(config, shutdown_event)
+            )
     except BaseException:
         _set_shutdown_flag()
+        if alert_monitor_task is not None:
+            alert_monitor_task.cancel()
+            await asyncio.gather(alert_monitor_task, return_exceptions=True)
         if check_connection_task is not None:
             check_connection_task.cancel()
             try:
@@ -1212,6 +1221,11 @@ async def main(config: dict[str, Any]) -> None:
     finally:
         _restore_loop_exception_handler()
         _set_shutdown_flag()
+        await _await_background_task_shutdown(
+            alert_monitor_task,
+            task_name="Meshtastic alert monitor task",
+            timeout_seconds=5.0,
+        )
         await _await_background_task_shutdown(
             ready_task,
             task_name="ready heartbeat task",

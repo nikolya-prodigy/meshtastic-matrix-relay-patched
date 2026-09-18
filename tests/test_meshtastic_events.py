@@ -332,6 +332,32 @@ class TestOnMeshtasticMessage:
             "rxTime": 0,
         }
         on_meshtastic_message(packet, iface)
+        assert mu.last_meshtastic_packet_monotonic is not None
+
+    def test_local_admin_packet_does_not_reset_mesh_silence_clock(self):
+        from mmrelay.meshtastic.events import on_meshtastic_message
+
+        iface = MagicMock()
+        iface.myInfo.my_node_num = 12345
+        mu.meshtastic_client = iface
+        mu._relay_active_client_id = id(iface)
+        mu.config = None
+        mu.shutting_down = False
+        mu._callbacks_tearing_down = False
+        mu.subscribed_to_messages = False
+        mu.reconnecting = False
+        mu._relay_startup_drain_deadline_monotonic_secs = None
+        mu._relay_rx_time_clock_skew_secs = None
+
+        packet = {
+            "decoded": {"portnum": "ADMIN_APP"},
+            "from": 12345,
+            "to": 12345,
+            "rxTime": 0,
+        }
+        on_meshtastic_message(packet, iface)
+
+        assert mu.last_meshtastic_packet_monotonic is None
 
 
 @pytest.mark.usefixtures("reset_meshtastic_globals")

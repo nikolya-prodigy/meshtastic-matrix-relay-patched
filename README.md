@@ -194,6 +194,41 @@ matrix_bridge_meshtastic_relay_configuration_extension_yaml: |
       send_welcome_on_start: false
       allow_commands_in_portal_rooms: false
 
+      alerts:
+        # Уведомления отправляются только в control-room.
+        enabled: true
+        check_interval_seconds: 60
+        initial_delay_seconds: 30
+        # Пока проблема сохраняется, повторять её не чаще одного раза в час.
+        cooldown_seconds: 3600
+        recovery_notifications: true
+        connection:
+          enabled: true
+          grace_seconds: 120
+        battery:
+          enabled: true
+          threshold_percent: 20
+          recovery_percent: 25
+          online_only: true
+        queue:
+          enabled: true
+          threshold: 10
+          recovery_threshold: 3
+        mesh_silence:
+          enabled: true
+          timeout_seconds: 3600
+          startup_grace_seconds: 900
+        channel_utilization:
+          enabled: true
+          threshold_percent: 40
+          recovery_percent: 30
+        lora_tx_disabled:
+          enabled: true
+        mqtt:
+          enabled: true
+          probe_interval_seconds: 300
+          probe_timeout_seconds: 12
+
     space:
       enabled: true
       name: Meshtastic
@@ -264,22 +299,37 @@ matrix_bridge_meshtastic_relay_configuration_extension_yaml: |
 
 ### Краткий справочник
 
-| Параметр                           | Что меняет                                                         |
-| ---------------------------------- | ------------------------------------------------------------------ |
-| `meshtastic_portals.enabled`       | Включает управляемые ботом Space, channel rooms, DM и control-room |
-| `alias_prefix`                     | Префикс автоматически создаваемых room aliases                     |
-| `invite_users`                     | Matrix ID для автоматического приглашения в порталы                |
-| `access.channel_writers`           | Разрешённые отправители Matrix -> публичные Meshtastic-каналы      |
-| `icon.*`                           | Источник и область применения Matrix avatar                        |
-| `control.*`                        | Доступ, имя, alias и область работы control-команд                 |
-| `space.*`                          | Автоматический Space и его профиль                                 |
-| `channels.*`                       | Создание комнат каналов и шаблон их имён                           |
-| `direct_messages.*`                | Автосоздание DM и шаблон имени комнаты                             |
-| `message_interactions.*`           | Нативный relay replies и reactions                                 |
-| `delivery_receipts.*`              | Запрос ACK и Matrix-реакции состояния доставки                     |
-| `message_fragmentation.*`          | Оптимизация кириллицы, деление текста и pacing частей              |
-| `plugins.ping.auto_pong.*`         | Триггеры, ответ, каналы и параметры линка в auto-pong              |
-| `database.msg_map.wipe_on_restart` | Сохранение связей событий для replies/reactions после рестарта     |
+| Параметр                           | Что меняет                                                           |
+| ---------------------------------- | -------------------------------------------------------------------- |
+| `meshtastic_portals.enabled`       | Включает управляемые ботом Space, channel rooms, DM и control-room   |
+| `alias_prefix`                     | Префикс автоматически создаваемых room aliases                       |
+| `invite_users`                     | Matrix ID для автоматического приглашения в порталы                  |
+| `access.channel_writers`           | Разрешённые отправители Matrix -> публичные Meshtastic-каналы        |
+| `icon.*`                           | Источник и область применения Matrix avatar                          |
+| `control.*`                        | Доступ, имя, alias и область работы control-команд                   |
+| `control.alerts.*`                 | Аварийные уведомления, пороги, cooldown и сообщения о восстановлении |
+| `space.*`                          | Автоматический Space и его профиль                                   |
+| `channels.*`                       | Создание комнат каналов и шаблон их имён                             |
+| `direct_messages.*`                | Автосоздание DM и шаблон имени комнаты                               |
+| `message_interactions.*`           | Нативный relay replies и reactions                                   |
+| `delivery_receipts.*`              | Запрос ACK и Matrix-реакции состояния доставки                       |
+| `message_fragmentation.*`          | Оптимизация кириллицы, деление текста и pacing частей                |
+| `plugins.ping.auto_pong.*`         | Триггеры, ответ, каналы и параметры линка в auto-pong                |
+| `database.msg_map.wipe_on_restart` | Сохранение связей событий для replies/reactions после рестарта       |
+
+### Уведомления control-room
+
+Монитор отправляет отдельное сообщение при появлении проблемы и, если включено
+`recovery_notifications`, после восстановления. Пока проблема сохраняется, она
+повторяется не чаще `cooldown_seconds`. Пороговые проверки используют
+гистерезис: например, батарея вызывает предупреждение при 20%, но считается
+восстановившейся только при 25%.
+
+Отслеживаются потеря подключения к локальной ноде, низкий заряд недавно
+слышанных нод, рост исходящей очереди, отсутствие свежих входящих mesh-пакетов,
+загрузка канала, выключенный LoRa TX и подключение MQTT. Ручной `disconnect` не
+считается аварией. MQTT проверяется штатным локальным Admin API и только тогда,
+когда MQTT включён в конфигурации ноды.
 
 ## Документация upstream
 

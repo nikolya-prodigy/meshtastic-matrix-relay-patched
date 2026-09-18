@@ -146,6 +146,7 @@ __all__ = [
     "get_shortname",
     "get_startup_drain_complete_event",
     "is_running_as_service",
+    "last_meshtastic_packet_monotonic",
     "logging",
     "mesh_pb2",
     "meshtastic",
@@ -448,6 +449,7 @@ _CONNECT_ATTEMPT_BLE_WAIT_MAX_SECS = (
 reconnecting = False
 shutting_down = False
 connection_suspended = False
+last_meshtastic_packet_monotonic: float | None = None
 
 reconnect_task: "asyncio.Task[Any] | Future[Any] | None" = (
     None  # asyncio.Task when scheduled from async, concurrent.futures.Future when scheduled via run_coroutine_threadsafe
