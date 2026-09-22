@@ -846,18 +846,6 @@ def _run_trace_route_request(
     destination_id: str,
     hop_limit: int,
 ) -> tuple[list[str], str | None]:
-    request_trace_route = getattr(interface, "requestTraceRoute", None)
-    if callable(request_trace_route):
-        try:
-            result = request_trace_route(
-                destination_id,
-                hop_limit,
-                channelIndex=0,
-            )
-            return _format_structured_trace_route(interface, result), None
-        except Exception as exc:  # noqa: BLE001 - surface API failures to Matrix
-            return [], str(exc) or exc.__class__.__name__
-
     try:
         from meshtastic.mesh_interface_runtime.request_wait import WAIT_ATTR_TRACEROUTE
         from meshtastic.protobuf import mesh_pb2, portnums_pb2
@@ -892,6 +880,8 @@ def _run_trace_route_request(
                 response_event.set()
                 return
         if not _is_trace_response_packet(packet, portnums_pb2):
+            return
+        if not _packet_from_destination(packet, destination_id):
             return
         if response_packet is None or _trace_packet_rank(packet) > _trace_packet_rank(
             response_packet
@@ -987,7 +977,7 @@ def _identifier_candidates(value: Any) -> set[str]:
     return {candidate.casefold() for candidate in candidates}
 
 
-def _telemetry_packet_from_destination(
+def _packet_from_destination(
     packet: dict[str, Any],
     destination_id: str,
 ) -> bool:
@@ -1077,7 +1067,7 @@ def _run_telemetry_request(
 
         if not _is_telemetry_response_packet(packet, portnums_pb2):
             return
-        if not _telemetry_packet_from_destination(packet, destination_id):
+        if not _packet_from_destination(packet, destination_id):
             return
         response_packet = packet
         response_event.set()
@@ -1227,36 +1217,6 @@ def _format_telemetry_response_packet(packet: dict[str, Any]) -> list[str]:
                 lines.append(f"  {metric_label}: {value}")
 
     return lines
-
-
-def _format_structured_trace_route(interface: Any, result: Any) -> list[str]:
-    route, snr_towards = _structured_trace_path(result.route_towards)
-    if result.route_back is None:
-        route_back: list[int] = []
-        snr_back: list[int] = []
-    else:
-        route_back, snr_back = _structured_trace_path(result.route_back)
-    return _format_trace_route_data(
-        interface,
-        route,
-        snr_towards,
-        route_back,
-        snr_back,
-    )
-
-
-def _structured_trace_path(hops: Iterable[Any]) -> tuple[list[int], list[int]]:
-    route: list[int] = []
-    snr_values: list[int] = []
-    for index, hop in enumerate(hops):
-        route.append(int(hop.node_num))
-        if index == 0:
-            continue
-        snr_db = hop.snr_db
-        snr_values.append(-128 if snr_db is None else round(float(snr_db) * 4))
-    if not route:
-        raise ValueError("Traceroute response contained an empty route")
-    return route, snr_values
 
 
 def _trace_packet_rank(packet: dict[str, Any]) -> tuple[int, int, int]:
@@ -1439,7 +1399,7 @@ def _trace_endpoint(
     decoded_key: str,
     packet_key: str,
 ) -> int:
-    for value in (decoded.get(decoded_key), packet.get(packet_key)):
+    for value in (packet.get(packet_key), decoded.get(decoded_key)):
         parsed = _parse_node_num(value)
         if parsed is not None:
             return parsed

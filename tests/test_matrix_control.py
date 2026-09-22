@@ -461,6 +461,8 @@ def test_trace_route_packet_formats_direct_return_route(monkeypatch) -> None:
         "hopStart": 7,
         "decoded": {
             "portnum": "TRACEROUTE_APP",
+            "source": 0x69852B48,
+            "dest": 0x69852B48,
             "payload": {
                 "route": [],
                 "route_back": [],
@@ -486,34 +488,26 @@ def test_trace_route_packet_formats_direct_return_route(monkeypatch) -> None:
     assert control._trace_packet_has_return_path(packet) is True
 
 
-def test_trace_request_uses_structured_meshtastic_api() -> None:
-    interface = _trace_interface()
-    interface.requestTraceRoute = MagicMock(
-        return_value=SimpleNamespace(
-            route_towards=(
-                SimpleNamespace(node_num=0x69852B48, snr_db=None),
-                SimpleNamespace(node_num=0xACA9DF2C, snr_db=-16.0),
-            ),
-            route_back=(
-                SimpleNamespace(node_num=0xACA9DF2C, snr_db=None),
-                SimpleNamespace(node_num=0x69852B48, snr_db=-8.25),
-            ),
+def test_trace_response_must_come_from_requested_node() -> None:
+    destination = "!aca9df2c"
+
+    assert (
+        control._packet_from_destination(
+            {"from": 0xACA9DF2C, "fromId": destination},
+            destination,
         )
+        is True
+    )
+    assert (
+        control._packet_from_destination(
+            {"from": 0x69852B48, "fromId": "!69852b48"},
+            destination,
+        )
+        is False
     )
 
-    lines, error = control._run_trace_route_request(interface, "!aca9df2c", 7)
 
-    interface.requestTraceRoute.assert_called_once_with(
-        "!aca9df2c",
-        7,
-        channelIndex=0,
-    )
-    assert error is None
-    assert "Route back to us:" in lines
-    assert lines[-3:] == ["NICK Nikolya", "↓ -8.25 dB", "PSIX Psix_garage"]
-
-
-def test_trace_response_accepts_relay_source() -> None:
+def test_trace_response_packet_recognizes_traceroute_port() -> None:
     class PortNums:
         class PortNum:
             TRACEROUTE_APP = 1
