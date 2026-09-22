@@ -146,6 +146,7 @@ def reset_control_state(monkeypatch):
     )
     monkeypatch.setattr(control, "_NODE_INDEX_CACHE", {})
     monkeypatch.setattr(control, "_CONTROL_BACKGROUND_REQUESTS", set())
+    monkeypatch.setattr(control, "_LAST_TRACE_ROUTE_REQUEST_AT", None)
     monkeypatch.setattr(facade, "send_matrix_reaction", AsyncMock())
     monkeypatch.setattr(meshtastic_utils, "meshtastic_client", _interface())
     yield
@@ -373,6 +374,27 @@ async def test_trace_command_requests_route(monkeypatch) -> None:
         ("trace", "!control:example.org", "!new"),
     )
     assert "Tracing route to NEW New Node..." in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_trace_command_enforces_global_cooldown(monkeypatch) -> None:
+    sent = _capture_messages(monkeypatch)
+    scheduled = MagicMock(return_value=True)
+    monotonic = MagicMock(side_effect=[100.0, 110.2, 130.0])
+    monkeypatch.setattr(control, "_schedule_trace_route_result", scheduled)
+    monkeypatch.setattr(control, "monotonic", monotonic)
+
+    await control.handle_control_room_message(_room(), _event("nodes"))
+    await control.handle_control_room_message(_room(), _event("trace 1"))
+    await control.handle_control_room_message(_room(), _event("trace 1"))
+
+    assert sent[-1] == "Traceroute cooldown is active. Try again in 20 seconds."
+    scheduled.assert_called_once()
+
+    await control.handle_control_room_message(_room(), _event("trace 1"))
+
+    assert "Tracing route to NEW New Node..." in sent[-1]
+    assert scheduled.call_count == 2
 
 
 def test_trace_summary_replaces_node_ids_with_names() -> None:

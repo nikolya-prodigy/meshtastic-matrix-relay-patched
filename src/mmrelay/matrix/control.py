@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import math
 import re
 import threading
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
+from time import monotonic
 from typing import Any
 
 import mmrelay.matrix_utils as facade
@@ -60,9 +62,11 @@ Channel rooms are for Meshtastic traffic. Use this chat for bot commands.
 
 DEFAULT_NODES_LIMIT = 30
 TRACE_ROUTE_BASE_TIMEOUT_SECONDS = 4.0
+TRACE_ROUTE_COOLDOWN_SECONDS = 30.0
 TELEMETRY_TIMEOUT_SECONDS = 30.0
 _NODE_INDEX_CACHE: dict[tuple[str, str], list["NodeEntry"]] = {}
 _CONTROL_BACKGROUND_REQUESTS: set[tuple[str, ...]] = set()
+_LAST_TRACE_ROUTE_REQUEST_AT: float | None = None
 _NODE_ID_RE = re.compile(r"![0-9a-fA-F]{8}")
 
 
@@ -1848,6 +1852,8 @@ async def _handle_signal_command(room: Any, event: Any, args: str) -> bool:
 
 
 async def _handle_trace_command(room: Any, event: Any, args: str) -> bool:
+    global _LAST_TRACE_ROUTE_REQUEST_AT
+
     entry = _resolve_node_entry(room, event, args)
     interface = _get_interface()
     if entry is None or interface is None:
@@ -1862,12 +1868,18 @@ async def _handle_trace_command(room: Any, event: Any, args: str) -> bool:
         )
         return True
 
-    await send_control_message(
-        room.room_id,
-        f"Tracing route to {entry.title}... I will post the result here.",
-    )
-    hop_limit = _trace_hop_limit(interface)
+    now = monotonic()
+    if _LAST_TRACE_ROUTE_REQUEST_AT is not None:
+        elapsed = now - _LAST_TRACE_ROUTE_REQUEST_AT
+        if elapsed < TRACE_ROUTE_COOLDOWN_SECONDS:
+            remaining = math.ceil(TRACE_ROUTE_COOLDOWN_SECONDS - elapsed)
+            await send_control_message(
+                room.room_id,
+                f"Traceroute cooldown is active. Try again in {remaining} seconds.",
+            )
+            return True
 
+    hop_limit = _trace_hop_limit(interface)
     scheduled = _schedule_trace_route_result(
         room.room_id,
         f"Trace route for {entry.title}",
@@ -1880,6 +1892,13 @@ async def _handle_trace_command(room: Any, event: Any, args: str) -> bool:
         await send_control_message(
             room.room_id, f"Trace route for {entry.title} is already running."
         )
+        return True
+
+    _LAST_TRACE_ROUTE_REQUEST_AT = now
+    await send_control_message(
+        room.room_id,
+        f"Tracing route to {entry.title}... I will post the result here.",
+    )
     return True
 
 
