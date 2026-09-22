@@ -7,7 +7,6 @@ import html
 import logging
 import re
 import threading
-import time
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -61,7 +60,6 @@ Channel rooms are for Meshtastic traffic. Use this chat for bot commands.
 
 DEFAULT_NODES_LIMIT = 30
 TRACE_ROUTE_BASE_TIMEOUT_SECONDS = 4.0
-TRACE_ROUTE_RETURN_PATH_SETTLE_SECONDS = 3.0
 TELEMETRY_TIMEOUT_SECONDS = 30.0
 _NODE_INDEX_CACHE: dict[tuple[str, str], list["NodeEntry"]] = {}
 _CONTROL_BACKGROUND_REQUESTS: set[tuple[str, ...]] = set()
@@ -848,6 +846,18 @@ def _run_trace_route_request(
     destination_id: str,
     hop_limit: int,
 ) -> tuple[list[str], str | None]:
+    request_trace_route = getattr(interface, "requestTraceRoute", None)
+    if callable(request_trace_route):
+        try:
+            result = request_trace_route(
+                destination_id,
+                hop_limit,
+                channelIndex=0,
+            )
+            return _format_structured_trace_route(interface, result), None
+        except Exception as exc:  # noqa: BLE001 - surface API failures to Matrix
+            return [], str(exc) or exc.__class__.__name__
+
     try:
         from meshtastic.mesh_interface_runtime.request_wait import WAIT_ATTR_TRACEROUTE
         from meshtastic.protobuf import mesh_pb2, portnums_pb2
@@ -860,10 +870,9 @@ def _run_trace_route_request(
     response_error: str | None = None
     sent_request_id: int | None = None
     response_event = threading.Event()
-    first_response_at: float | None = None
 
     def on_packet(packet: dict[str, Any], interface: Any | None = None) -> None:
-        nonlocal response_packet, response_error, first_response_at
+        nonlocal response_packet, response_error
         if not isinstance(packet, dict):
             return
         if interface is not None and id(interface) != id(trace_interface):
@@ -888,8 +897,6 @@ def _run_trace_route_request(
             response_packet
         ):
             response_packet = packet
-        if first_response_at is None:
-            first_response_at = time.monotonic()
         if _trace_packet_has_return_path(packet):
             _mark_trace_wait_finished(trace_interface, WAIT_ATTR_TRACEROUTE, request_id)
             response_event.set()
@@ -911,21 +918,7 @@ def _run_trace_route_request(
         if sent_request_id is None:
             return [], "failed to get traceroute request id"
         wait_factor = _trace_wait_factor(interface, hop_limit)
-        deadline = time.monotonic() + (TRACE_ROUTE_BASE_TIMEOUT_SECONDS * wait_factor)
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            response_event.wait(min(remaining, TRACE_ROUTE_RETURN_PATH_SETTLE_SECONDS))
-            if response_event.is_set():
-                break
-            if (
-                response_packet is not None
-                and first_response_at is not None
-                and time.monotonic() - first_response_at
-                >= TRACE_ROUTE_RETURN_PATH_SETTLE_SECONDS
-            ):
-                break
+        response_event.wait(TRACE_ROUTE_BASE_TIMEOUT_SECONDS * wait_factor)
     except Exception as exc:  # noqa: BLE001 - surface API failures to Matrix
         if response_packet is None:
             return [], response_error or str(exc) or exc.__class__.__name__
@@ -1236,6 +1229,36 @@ def _format_telemetry_response_packet(packet: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _format_structured_trace_route(interface: Any, result: Any) -> list[str]:
+    route, snr_towards = _structured_trace_path(result.route_towards)
+    if result.route_back is None:
+        route_back: list[int] = []
+        snr_back: list[int] = []
+    else:
+        route_back, snr_back = _structured_trace_path(result.route_back)
+    return _format_trace_route_data(
+        interface,
+        route,
+        snr_towards,
+        route_back,
+        snr_back,
+    )
+
+
+def _structured_trace_path(hops: Iterable[Any]) -> tuple[list[int], list[int]]:
+    route: list[int] = []
+    snr_values: list[int] = []
+    for index, hop in enumerate(hops):
+        route.append(int(hop.node_num))
+        if index == 0:
+            continue
+        snr_db = hop.snr_db
+        snr_values.append(-128 if snr_db is None else round(float(snr_db) * 4))
+    if not route:
+        raise ValueError("Traceroute response contained an empty route")
+    return route, snr_values
+
+
 def _trace_packet_rank(packet: dict[str, Any]) -> tuple[int, int, int]:
     try:
         from google.protobuf.message import DecodeError
@@ -1253,7 +1276,7 @@ def _trace_packet_rank(packet: dict[str, Any]) -> tuple[int, int, int]:
     except (DecodeError, TypeError):
         return (0, 0, 0)
     return (
-        1 if route_discovery.route_back else 0,
+        1 if _trace_return_path_is_valid(packet, route_discovery) else 0,
         len(route_discovery.route_back),
         len(route_discovery.route),
     )
@@ -1275,7 +1298,13 @@ def _trace_packet_has_return_path(packet: dict[str, Any]) -> bool:
         route_discovery.ParseFromString(payload)
     except (DecodeError, TypeError):
         return False
-    return bool(route_discovery.route_back)
+    return _trace_return_path_is_valid(packet, route_discovery)
+
+
+def _trace_return_path_is_valid(packet: dict[str, Any], route_discovery: Any) -> bool:
+    route_back = list(route_discovery.route_back)
+    snr_back = list(route_discovery.snr_back)
+    return "hopStart" in packet and len(snr_back) == len(route_back) + 1
 
 
 def _is_trace_response_packet(
@@ -1362,9 +1391,7 @@ def _format_trace_route_packet(interface: Any, packet: dict[str, Any]) -> list[s
         decoded, packet, decoded_key="source", packet_key="from"
     )
     route = [origin, *list(route_discovery.route), destination]
-    route_back = _trace_route_back(
-        route_discovery, origin, destination, decoded, packet
-    )
+    route_back = _trace_route_back(route_discovery, origin, destination, packet)
     return _format_trace_route_data(
         interface,
         route,
@@ -1398,19 +1425,10 @@ def _trace_route_back(
     route_discovery: Any,
     origin: int,
     destination: int,
-    decoded: dict[str, Any],
     packet: dict[str, Any],
 ) -> list[int]:
     route_back = list(route_discovery.route_back)
-    if not route_back:
-        return []
-    snr_back = list(route_discovery.snr_back)
-    has_reliable_endpoints = (
-        packet.get("hopStart") is not None
-        or decoded.get("bitfield") not in (None, 0)
-        or len(snr_back) == len(route_back) + 1
-    )
-    if has_reliable_endpoints:
+    if _trace_return_path_is_valid(packet, route_discovery):
         return [destination, *route_back, origin]
     return route_back
 

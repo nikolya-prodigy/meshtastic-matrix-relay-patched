@@ -438,6 +438,81 @@ def test_trace_route_packet_reports_missing_return_route() -> None:
     ]
 
 
+def test_trace_route_packet_formats_direct_return_route(monkeypatch) -> None:
+    from meshtastic.protobuf import mesh_pb2
+
+    class RouteDiscovery:
+        def __init__(self) -> None:
+            self.route = []
+            self.route_back = []
+            self.snr_towards = []
+            self.snr_back = []
+
+        def ParseFromString(self, payload) -> None:
+            self.route = payload.get("route", [])
+            self.route_back = payload.get("route_back", [])
+            self.snr_towards = payload.get("snr_towards", [])
+            self.snr_back = payload.get("snr_back", [])
+
+    monkeypatch.setattr(mesh_pb2, "RouteDiscovery", RouteDiscovery)
+    packet = {
+        "from": 0xACA9DF2C,
+        "to": 0x69852B48,
+        "hopStart": 7,
+        "decoded": {
+            "portnum": "TRACEROUTE_APP",
+            "payload": {
+                "route": [],
+                "route_back": [],
+                "snr_towards": [-64],
+                "snr_back": [-33],
+            },
+        },
+    }
+
+    lines = control._format_trace_route_packet(_trace_interface(), packet)
+
+    assert lines == [
+        "Route towards destination:",
+        "PSIX Psix_garage",
+        "↓ -16 dB",
+        "NICK Nikolya",
+        "",
+        "Route back to us:",
+        "NICK Nikolya",
+        "↓ -8.25 dB",
+        "PSIX Psix_garage",
+    ]
+    assert control._trace_packet_has_return_path(packet) is True
+
+
+def test_trace_request_uses_structured_meshtastic_api() -> None:
+    interface = _trace_interface()
+    interface.requestTraceRoute = MagicMock(
+        return_value=SimpleNamespace(
+            route_towards=(
+                SimpleNamespace(node_num=0x69852B48, snr_db=None),
+                SimpleNamespace(node_num=0xACA9DF2C, snr_db=-16.0),
+            ),
+            route_back=(
+                SimpleNamespace(node_num=0xACA9DF2C, snr_db=None),
+                SimpleNamespace(node_num=0x69852B48, snr_db=-8.25),
+            ),
+        )
+    )
+
+    lines, error = control._run_trace_route_request(interface, "!aca9df2c", 7)
+
+    interface.requestTraceRoute.assert_called_once_with(
+        "!aca9df2c",
+        7,
+        channelIndex=0,
+    )
+    assert error is None
+    assert "Route back to us:" in lines
+    assert lines[-3:] == ["NICK Nikolya", "↓ -8.25 dB", "PSIX Psix_garage"]
+
+
 def test_trace_response_accepts_relay_source() -> None:
     class PortNums:
         class PortNum:
@@ -466,10 +541,12 @@ def test_trace_packet_rank_prefers_return_route(monkeypatch) -> None:
         def __init__(self) -> None:
             self.route = []
             self.route_back = []
+            self.snr_back = []
 
         def ParseFromString(self, payload):
             self.route = payload.get("route", [])
             self.route_back = payload.get("route_back", [])
+            self.snr_back = payload.get("snr_back", [])
 
     monkeypatch.setattr(mesh_pb2, "RouteDiscovery", RouteDiscovery)
     base_packet = {
@@ -486,9 +563,14 @@ def test_trace_packet_rank_prefers_return_route(monkeypatch) -> None:
     }
     with_return_packet = {
         **base_packet,
+        "hopStart": 7,
         "decoded": {
             **base_packet["decoded"],
-            "payload": {"route": [0x00003040], "route_back": [0xACA9DF2C]},
+            "payload": {
+                "route": [0x00003040],
+                "route_back": [0xACA9DF2C],
+                "snr_back": [-33, -18],
+            },
         },
     }
 
