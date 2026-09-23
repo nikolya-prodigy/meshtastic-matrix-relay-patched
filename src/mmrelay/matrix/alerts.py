@@ -7,7 +7,6 @@ import time
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
-from mmrelay.constants.domain import ONLINE_NODE_WINDOW_SECONDS
 from mmrelay.log_utils import get_logger
 
 logger = get_logger(name="MatrixAlerts")
@@ -220,13 +219,11 @@ class AlertMonitor:
         *,
         send_alert: SendAlert = _default_send_alert,
         monotonic: Clock = time.monotonic,
-        wall_time: Clock = time.time,
     ) -> None:
         self.config = config
         self.settings = alert_config(config)
         self.send_alert = send_alert
         self.monotonic = monotonic
-        self.wall_time = wall_time
         self.started_at = monotonic()
         self.active: set[str] = set()
         self.last_sent: dict[str, float] = {}
@@ -344,36 +341,27 @@ class AlertMonitor:
         recovery = _positive_float(
             rule.get("recovery_percent"), DEFAULT_BATTERY_RECOVERY_PERCENT
         )
-        online_only = rule.get("online_only", True) is True
-        now = self.wall_time()
-        local_info = _local_node_info(interface)
-        for node_id, info in _iter_node_info(interface):
-            is_local = info is local_info or (
-                local_info is not None and info == local_info
-            )
-            if online_only and not is_local:
-                try:
-                    last_heard = float(info.get("lastHeard", 0))
-                except (TypeError, ValueError, OverflowError):
-                    continue
-                if last_heard <= 0 or now - last_heard > ONLINE_NODE_WINDOW_SECONDS:
-                    continue
-            battery = _metric_float(_device_metrics(info), "batteryLevel")
-            if battery is None or battery > 100:
-                continue
-            key = f"battery:{node_id}"
-            condition: bool | None = None
-            if battery <= threshold:
-                condition = True
-            elif battery >= recovery:
-                condition = False
-            label = _node_label(node_id, info)
-            await self._update(
-                key,
-                condition,
-                f"Low battery on {label}: {battery:.0f}% (threshold: {threshold:.0f}%).",
-                f"Battery on {label} recovered to {battery:.0f}%.",
-            )
+        info = _local_node_info(interface)
+        if info is None:
+            return
+        battery = _metric_float(_device_metrics(info), "batteryLevel")
+        if battery is None or battery > 100:
+            return
+        condition: bool | None = None
+        if battery <= threshold:
+            condition = True
+        elif battery >= recovery:
+            condition = False
+        node_id = info.get("num") or getattr(
+            getattr(interface, "localNode", None), "nodeNum", None
+        )
+        label = _node_label(node_id, info)
+        await self._update(
+            "battery:local",
+            condition,
+            f"Low battery on {label}: {battery:.0f}% (threshold: {threshold:.0f}%).",
+            f"Battery on {label} recovered to {battery:.0f}%.",
+        )
 
     async def _check_mesh_silence(self, facade: Any) -> None:
         if not _rule_enabled(self.settings, "mesh_silence"):

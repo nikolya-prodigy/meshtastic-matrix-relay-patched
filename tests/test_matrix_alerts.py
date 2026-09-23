@@ -159,8 +159,7 @@ async def test_queue_alert_uses_hysteresis() -> None:
 
 
 @pytest.mark.asyncio
-async def test_battery_alert_ignores_stale_nodes_and_recovers() -> None:
-    clock = FakeClock(10_000)
+async def test_battery_alert_checks_only_local_node_and_recovers() -> None:
     send = AsyncMock()
     monitor = AlertMonitor(
         _config(
@@ -168,11 +167,9 @@ async def test_battery_alert_ignores_stale_nodes_and_recovers() -> None:
                 "enabled": True,
                 "threshold_percent": 20,
                 "recovery_percent": 25,
-                "online_only": True,
             }
         ),
         send_alert=send,
-        wall_time=clock,
     )
     interface = _interface(battery=15, last_heard=0)
 
@@ -189,14 +186,30 @@ async def test_battery_alert_ignores_stale_nodes_and_recovers() -> None:
     assert send.await_count == 2
     assert "recovered" in send.await_args.args[1].lower()
 
-    stale = _interface(battery=80, last_heard=clock.value)
-    stale.nodes["!00000002"] = {
-        "user": {"id": "!00000002", "shortName": "OLD"},
-        "lastHeard": 1,
-        "deviceMetrics": {"batteryLevel": 10},
+    interface.nodes["!00000002"] = {
+        "user": {"id": "!00000002", "shortName": "SPOT"},
+        "lastHeard": 10_000,
+        "deviceMetrics": {"batteryLevel": 1},
     }
-    await monitor._check_batteries(stale)
+    await monitor._check_batteries(interface)
     assert send.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_battery_alert_skips_remote_node_when_local_metrics_missing() -> None:
+    send = AsyncMock()
+    monitor = AlertMonitor(_config(battery={"enabled": True}), send_alert=send)
+    interface = _interface()
+    interface.nodesByNum[1].pop("deviceMetrics")
+    interface.nodes["!00000002"] = {
+        "user": {"id": "!00000002", "shortName": "SPOT"},
+        "lastHeard": 1000,
+        "deviceMetrics": {"batteryLevel": 1},
+    }
+
+    await monitor._check_batteries(interface)
+
+    send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

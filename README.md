@@ -209,7 +209,7 @@ matrix_bridge_meshtastic_relay_configuration_extension_yaml: |
           enabled: true
           threshold_percent: 20
           recovery_percent: 25
-          online_only: true
+          # Только нода, к которой подключён мост.
         queue:
           enabled: true
           threshold: 10

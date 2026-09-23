@@ -71,8 +71,7 @@ meshtastic_portals:
         enabled: true
         threshold_percent: 20
         recovery_percent: 25
-        # Ignore stale remote NodeDB entries; the local node is always checked.
-        online_only: true
+        # Checks only the Meshtastic node connected to this bridge.
       queue:
         enabled: true
         threshold: 10
