@@ -158,24 +158,55 @@ def commands_allowed_in_portal_rooms(config: dict[str, Any] | None) -> bool:
     return bool(control.get("allow_commands_in_portal_rooms", True))
 
 
-async def send_control_message(room_id: str, message: str) -> None:
+def _control_message_content(message: str) -> dict[str, str]:
+    return {
+        "msgtype": "m.text",
+        "body": message,
+        "format": "org.matrix.custom.html",
+        "formatted_body": _plain_text_to_html(message),
+    }
+
+
+async def send_control_message(room_id: str, message: str) -> str | None:
     client = getattr(facade, "matrix_client", None)
     if client is None:
         facade.logger.error("matrix_client is None, cannot send control message")
-        return
+        return None
     try:
-        await client.room_send(
+        response = await client.room_send(
+            room_id=room_id,
+            message_type="m.room.message",
+            content=_control_message_content(message),
+        )
+        event_id = getattr(response, "event_id", None)
+        return event_id if isinstance(event_id, str) and event_id else None
+    except Exception:  # noqa: BLE001 - keep control room handling non-fatal
+        facade.logger.exception("Failed to send control message to %s", room_id)
+        return None
+
+
+async def _replace_control_message(room_id: str, event_id: str, message: str) -> bool:
+    client = getattr(facade, "matrix_client", None)
+    if client is None:
+        return False
+
+    new_content = _control_message_content(message)
+    try:
+        response = await client.room_send(
             room_id=room_id,
             message_type="m.room.message",
             content={
-                "msgtype": "m.text",
-                "body": message,
-                "format": "org.matrix.custom.html",
-                "formatted_body": _plain_text_to_html(message),
+                **_control_message_content(f"* {message}"),
+                "m.new_content": new_content,
+                "m.relates_to": {"rel_type": "m.replace", "event_id": event_id},
             },
         )
-    except Exception:  # noqa: BLE001 - keep control room handling non-fatal
-        facade.logger.exception("Failed to send control message to %s", room_id)
+        if isinstance(getattr(response, "event_id", None), str):
+            return True
+        facade.logger.warning("Matrix rejected edit of control message %s", event_id)
+    except Exception:  # noqa: BLE001 - preserve the result via a new message
+        facade.logger.exception("Failed to edit control message %s", event_id)
+    return False
 
 
 async def _send_control_reaction(room: Any, event: Any, emoji: str) -> None:
@@ -701,14 +732,25 @@ async def _send_trace_route_result(
     interface: Any,
     destination_id: str,
     hop_limit: int,
+    pending_message: str,
 ) -> None:
-    lines, error = await asyncio.to_thread(
-        _run_trace_route_request,
-        interface,
-        destination_id,
-        hop_limit,
-    )
-    await send_control_message(room_id, _format_meshtastic_summary(title, lines, error))
+    pending_event_id = await send_control_message(room_id, pending_message)
+    try:
+        lines, error = await asyncio.to_thread(
+            _run_trace_route_request,
+            interface,
+            destination_id,
+            hop_limit,
+        )
+    except Exception as exc:  # noqa: BLE001 - report failed requests in Matrix
+        facade.logger.exception("Meshtastic trace route request failed")
+        lines, error = [], str(exc) or exc.__class__.__name__
+    result = _format_meshtastic_summary(title, lines, error)
+    if pending_event_id and await _replace_control_message(
+        room_id, pending_event_id, result
+    ):
+        return
+    await send_control_message(room_id, result)
 
 
 async def _send_telemetry_result(
@@ -802,6 +844,7 @@ def _schedule_trace_route_result(
     destination_id: str,
     hop_limit: int,
     request_key: tuple[str, ...],
+    pending_message: str,
 ) -> bool:
     if request_key in _CONTROL_BACKGROUND_REQUESTS:
         return False
@@ -814,6 +857,7 @@ def _schedule_trace_route_result(
             interface,
             destination_id,
             hop_limit,
+            pending_message,
         )
     )
 
@@ -1887,6 +1931,7 @@ async def _handle_trace_command(room: Any, event: Any, args: str) -> bool:
         entry.node_id,
         hop_limit,
         ("trace", room.room_id, entry.node_id),
+        f"Tracing route to {entry.title}... I will post the result here.",
     )
     if not scheduled:
         await send_control_message(
@@ -1895,10 +1940,6 @@ async def _handle_trace_command(room: Any, event: Any, args: str) -> bool:
         return True
 
     _LAST_TRACE_ROUTE_REQUEST_AT = now
-    await send_control_message(
-        room.room_id,
-        f"Tracing route to {entry.title}... I will post the result here.",
-    )
     return True
 
 

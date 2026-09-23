@@ -372,8 +372,92 @@ async def test_trace_command_requests_route(monkeypatch) -> None:
         "!new",
         7,
         ("trace", "!control:example.org", "!new"),
+        "Tracing route to NEW New Node... I will post the result here.",
     )
-    assert "Tracing route to NEW New Node..." in sent[-1]
+    assert not any("Tracing route to" in message for message in sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lines,error,expected",
+    [
+        (["Route towards destination:", "NICK"], None, "NICK"),
+        ([], "Timed out waiting for traceroute", "failed: Timed out"),
+    ],
+)
+async def test_trace_result_replaces_pending_message(
+    monkeypatch, lines, error, expected
+) -> None:
+    client = SimpleNamespace(
+        room_send=AsyncMock(
+            side_effect=[
+                SimpleNamespace(event_id="$pending"),
+                SimpleNamespace(event_id="$edit"),
+            ]
+        )
+    )
+    monkeypatch.setattr(facade, "matrix_client", client)
+    monkeypatch.setattr(
+        control, "_run_trace_route_request", MagicMock(return_value=(lines, error))
+    )
+
+    await control._send_trace_route_result(
+        "!control",
+        "Trace route for NEW",
+        _interface(),
+        "!new",
+        7,
+        "Tracing route...",
+    )
+
+    assert client.room_send.await_count == 2
+    assert (
+        client.room_send.await_args_list[0].kwargs["content"]["body"]
+        == "Tracing route..."
+    )
+    content = client.room_send.await_args.kwargs["content"]
+    assert content["m.relates_to"] == {
+        "rel_type": "m.replace",
+        "event_id": "$pending",
+    }
+    assert expected in content["m.new_content"]["body"]
+    assert content["body"] == "* " + content["m.new_content"]["body"]
+    assert content["m.new_content"]["formatted_body"] == control._plain_text_to_html(
+        content["m.new_content"]["body"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_trace_result_falls_back_when_matrix_rejects_edit(monkeypatch) -> None:
+    client = SimpleNamespace(
+        room_send=AsyncMock(
+            side_effect=[
+                SimpleNamespace(event_id="$pending"),
+                SimpleNamespace(message="edit rejected"),
+                SimpleNamespace(event_id="$result"),
+            ]
+        )
+    )
+    monkeypatch.setattr(facade, "matrix_client", client)
+    monkeypatch.setattr(
+        control,
+        "_run_trace_route_request",
+        MagicMock(return_value=(["Route towards destination:", "NICK"], None)),
+    )
+
+    await control._send_trace_route_result(
+        "!control",
+        "Trace route for NEW",
+        _interface(),
+        "!new",
+        7,
+        "Tracing route...",
+    )
+
+    assert client.room_send.await_count == 3
+    content = client.room_send.await_args.kwargs["content"]
+    assert "Route towards destination:" in content["body"]
+    assert "m.relates_to" not in content
 
 
 @pytest.mark.asyncio
@@ -393,7 +477,6 @@ async def test_trace_command_enforces_global_cooldown(monkeypatch) -> None:
 
     await control.handle_control_room_message(_room(), _event("trace 1"))
 
-    assert "Tracing route to NEW New Node..." in sent[-1]
     assert scheduled.call_count == 2
 
 
