@@ -215,6 +215,15 @@ plugins:
     #require_bot_mention: true  # Override global setting for this plugin only
     # Does not need to specify channels, as it's a Matrix-only plugin
     #max_display: 30 # Default number of nodes shown by `nodes`; use `nodes all` or `nodes online all` to show all
+    # Output is newest-node-first. Setting fields selects a compact one-line view.
+    # Status messages from Firmware 2.8 appear when mtjk has received one.
+    #fields: ["name", "hardware", "power", "snr", "hops", "last_seen", "status"]
+    # Other aliases: short_name, long_name, node_id, node_num, role, public_key,
+    # battery, voltage, channel_utilization, air_util_tx, uptime, channel, favorite,
+    # latitude, longitude, altitude. Any raw dotted node path is also accepted, for
+    # example environmentMetrics.temperature or hostMetrics.freeMemory.
+    # Potentially secret-bearing paths (private keys, PSKs, passwords, wifi or
+    # bluetooth pairing settings, ...) are always withheld, even when configured.
 
 #community-plugins:
 #  sample_plugin:

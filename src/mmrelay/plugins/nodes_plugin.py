@@ -1,4 +1,7 @@
 import asyncio
+import base64
+import math
+import re
 from datetime import datetime
 from typing import Any
 
@@ -25,6 +28,88 @@ from mmrelay.plugins.base_plugin import BasePlugin
 
 logger = get_logger(__name__)
 DEFAULT_NODES_LIMIT = 30
+
+DEFAULT_FIELDS = ["name", "hardware", "power", "snr", "hops", "last_seen", "status"]
+FIELD_PATHS = {
+    "short_name": "user.shortName",
+    "long_name": "user.longName",
+    "node_id": "user.id",
+    "node_num": "num",
+    "hardware": "user.hwModel",
+    "role": "user.role",
+    "public_key": "user.publicKey",
+    "status": "status",
+    "battery": "deviceMetrics.batteryLevel",
+    "voltage": "deviceMetrics.voltage",
+    "channel_utilization": "deviceMetrics.channelUtilization",
+    "air_util_tx": "deviceMetrics.airUtilTx",
+    "uptime": "deviceMetrics.uptimeSeconds",
+    "snr": "snr",
+    "hops": "hopsAway",
+    "last_seen": "lastHeard",
+    "channel": "channel",
+    "favorite": "isFavorite",
+    "latitude": "position.latitude",
+    "longitude": "position.longitude",
+    "altitude": "position.altitude",
+}
+FIELD_LABELS = {
+    "short_name": "short",
+    "long_name": "long",
+    "node_id": "id",
+    "node_num": "num",
+    "role": "role",
+    "public_key": "key",
+    "status": "status",
+    "battery": "battery",
+    "voltage": "voltage",
+    "channel_utilization": "channel util",
+    "air_util_tx": "air util tx",
+    "uptime": "uptime",
+    "channel": "channel",
+    "favorite": "favorite",
+    "latitude": "lat",
+    "longitude": "lon",
+    "altitude": "alt",
+}
+AVAILABLE_FIELDS = tuple(["name", "power", *FIELD_PATHS.keys(), "<dotted node path>"])
+# Secret-bearing path segments (compared against lowercased alphanumeric
+# forms) that are never rendered, even when explicitly configured, so future
+# mtjk schema additions cannot leak credentials through raw node paths.
+SENSITIVE_FIELD_TOKENS = frozenset(
+    {
+        "adminkey",
+        "fixedpin",
+        "passwd",
+        "passkey",
+        "password",
+        "privatekey",
+        "psk",
+        "secret",
+        "sessionkey",
+        "wifi",
+    }
+)
+
+
+def _is_sensitive_field_path(field_path: str) -> bool:
+    """
+    Check whether a dotted node-data path may carry secret material.
+
+    Parameters:
+        field_path (str): Dotted field path (e.g. "user.publicKey" or a raw
+            configured path such as "config.network.wifiPsk").
+
+    Returns:
+        bool: True when any dot-separated segment, normalized to lowercase
+        alphanumerics, contains a known secret-bearing token. Public keys and
+        other intentional aliases remain allowed.
+    """
+    for segment in field_path.split("."):
+        normalized = re.sub(r"[^a-z0-9]", "", segment.lower())
+        if any(token in normalized for token in SENSITIVE_FIELD_TOKENS):
+            return True
+    return False
 
 
 def get_relative_time(timestamp: float) -> str:
@@ -75,6 +160,95 @@ def get_relative_time(timestamp: float) -> str:
     return "Just now"
 
 
+def _get_field_value(node: dict[str, Any], field_path: str) -> Any:
+    value: Any = node
+    for key in field_path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    # Only leaf values belong in summaries, including the combined name/power fields.
+    return None if isinstance(value, (dict, list, tuple, set)) else value
+
+
+def _format_public_key(value: Any) -> str | None:
+    if isinstance(value, bytes):
+        return base64.b64encode(value).decode("ascii") if value else None
+    if isinstance(value, bytearray):
+        return base64.b64encode(bytes(value)).decode("ascii") if value else None
+    if isinstance(value, str):
+        return value or None
+    return str(value) if value is not None else None
+
+
+def _format_last_seen(value: Any) -> str:
+    if value is None:
+        return "?"
+    try:
+        timestamp = float(value)
+        if timestamp <= 0 or not math.isfinite(timestamp):
+            return "?"
+        return get_relative_time(timestamp)
+    except (TypeError, ValueError, OverflowError, OSError):
+        logger.debug("Failed to parse lastHeard timestamp: %s", value)
+        return "?"
+
+
+def _last_heard_sort_value(info: dict[str, Any]) -> float:
+    try:
+        timestamp = float(info.get("lastHeard") or 0)
+        return timestamp if timestamp > 0 and math.isfinite(timestamp) else 0
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _format_hops(value: Any) -> str:
+    if value is None:
+        return "? hops away"
+    if value == 0:
+        return "direct"
+    if value == 1:
+        return "1 hop away"
+    return f"{value} hops away"
+
+
+def _format_field_value(field: str, value: Any) -> str | None:
+    if isinstance(value, (dict, list, tuple, set)):
+        # Never stringify whole containers; select leaf paths explicitly so
+        # secret-bearing keys added upstream cannot be dumped wholesale.
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    if field == "public_key":
+        return _format_public_key(value)
+    if field == "last_seen":
+        return _format_last_seen(value)
+    if field == "hops":
+        return _format_hops(value)
+    if field == "snr":
+        return f"{value}{SNR_UNIT_SUFFIX}" if value is not None else None
+    if field == "battery":
+        return f"{value}%" if value is not None else None
+    if field == "voltage":
+        return f"{value}V" if value is not None else None
+    if field in ("channel_utilization", "air_util_tx"):
+        return f"{value}%" if value is not None else None
+    if field == "uptime" and isinstance(value, (int, float)):
+        return f"{value}s"
+    if field == "altitude":
+        return f"{value}m" if value is not None else None
+    if field in ("latitude", "longitude"):
+        return f"{value}°" if value is not None else None
+    if field == "favorite":
+        return "yes" if value else "no" if value is not None else None
+    if isinstance(value, bytes):
+        return base64.b64encode(value).decode("ascii")
+    if isinstance(value, bytearray):
+        return base64.b64encode(bytes(value)).decode("ascii")
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return str(value) if value is not None else None
+
+
 class Plugin(BasePlugin):
     plugin_name = "nodes"
     is_core_plugin = True
@@ -82,17 +256,84 @@ class Plugin(BasePlugin):
     @property
     def description(self) -> str:
         """
-        Provide the plugin description and the node-list line format.
-
-        The returned string contains a human-readable description and usage hint.
+        Provide the plugin description and the configurable node-list line format.
 
         Returns:
-            A multiline string with the plugin description and usage hint.
+            A multiline string describing the node output and configuration key.
         """
-        return """Show mesh radios and node data
+        return (
+            "Show mesh radios and node data. Output fields can be selected with "
+            "plugins.nodes.fields.\n\n"
+            "Usage: nodes [online|limit|all]\n\n"
+            "Default: name / hardware / power / snr / hops / last_seen / status\n\n"
+            "Potentially secret-bearing paths (private keys, PSKs, passwords, "
+            "wifi settings, ...) are never rendered, even when configured."
+        )
 
-Usage: nodes [online|limit|all]
-"""
+    def _configured_fields(self) -> list[str]:
+        fields = self.config.get("fields", DEFAULT_FIELDS)
+        if not isinstance(fields, list) or not fields:
+            self.logger.warning(
+                "Plugin 'nodes': fields must be a non-empty list; using defaults."
+            )
+            return DEFAULT_FIELDS.copy()
+        configured = [field.strip() for field in fields if isinstance(field, str)]
+        configured = [field for field in configured if field]
+        if not configured:
+            self.logger.warning(
+                "Plugin 'nodes': fields contains no valid field names; using defaults."
+            )
+            return DEFAULT_FIELDS.copy()
+        withheld = [
+            field
+            for field in configured
+            if _is_sensitive_field_path(FIELD_PATHS.get(field, field))
+        ]
+        if withheld:
+            self.logger.warning(
+                "Plugin 'nodes': ignoring potentially secret-bearing fields: %s",
+                ", ".join(withheld),
+            )
+            configured = [field for field in configured if field not in withheld]
+        if not configured:
+            self.logger.warning(
+                "Plugin 'nodes': all configured fields are potentially "
+                "secret-bearing; using defaults."
+            )
+            return DEFAULT_FIELDS.copy()
+        return configured
+
+    def _render_field(
+        self, field: str, node_key: Any, info: dict[str, Any]
+    ) -> str | None:
+        if field == "name":
+            short_name = _get_field_value(info, "user.shortName") or UNKNOWN_NODE_VALUE
+            long_name = _get_field_value(info, "user.longName") or UNKNOWN_NODE_VALUE
+            return f"{short_name} {long_name}"
+        if field == "power":
+            battery = _get_field_value(info, "deviceMetrics.batteryLevel")
+            voltage = _get_field_value(info, "deviceMetrics.voltage")
+            battery_text = f"{battery}%" if battery is not None else "?%"
+            voltage_text = f"{voltage}V" if voltage is not None else "?V"
+            return f"{battery_text} {voltage_text}"
+
+        field_path = FIELD_PATHS.get(field, field)
+        value = _get_field_value(info, field_path)
+        if field == "node_id" and value is None and isinstance(node_key, str):
+            value = node_key
+        if field == "hardware" and (value is None or value == ""):
+            value = UNKNOWN_NODE_VALUE
+
+        rendered = _format_field_value(field, value)
+        if rendered is None:
+            return None
+        if field in ("hardware", "snr", "hops", "last_seen"):
+            return rendered
+
+        label = FIELD_LABELS.get(field)
+        if label is not None:
+            return f"{label}: {rendered}"
+        return f"{field}: {rendered}"
 
     def _default_limit(self) -> int:
         raw_limit = self.config.get("max_display", DEFAULT_NODES_LIMIT)
@@ -119,14 +360,7 @@ Usage: nodes [online|limit|all]
 
     @staticmethod
     def _last_heard_timestamp(info: dict[str, Any]) -> float:
-        value = info.get("lastHeard")
-        if value is None:
-            return -1
-        try:
-            parsed = float(value)
-        except (TypeError, ValueError, OverflowError):
-            return -1
-        return parsed if parsed > 0 else -1
+        return _last_heard_sort_value(info)
 
     @classmethod
     def _is_online(cls, info: dict[str, Any]) -> bool:
@@ -137,15 +371,19 @@ Usage: nodes [online|limit|all]
 
     def generate_response(self, args: str | None = None) -> str:
         """
-        Builds a textual summary of known Meshtastic nodes and their reported metrics.
+        Build a textual summary of known Meshtastic nodes using configured fields.
 
-        The returned string begins with "Nodes: <count>" and includes one readable
-        numbered block per node with short name, long name, hardware model, battery
-        percentage, voltage, SNR, hop distance, and last-heard relative time. If
-        the Meshtastic device cannot be contacted, returns an error message.
+        The response begins with "Nodes: <count>" and lists nodes newest-first.
+        Fields come from ``plugins.nodes.fields`` and may be aliases or raw dotted
+        node-data paths. Potentially secret-bearing paths are withheld and
+        container-valued paths render nothing rather than dumping raw data.
+        Without an explicit field selection, numbered blocks are used.
+        Arguments support online filtering and output limits in both formats.
+        If the Meshtastic device cannot be contacted, returns the
+        error message "Unable to connect to Meshtastic device."
 
         Returns:
-            response (str): The multi-line nodes summary or an error message when no Meshtastic client is available.
+            response (str): The multi-line nodes summary or connection error.
         """
         from mmrelay.meshtastic_utils import connect_meshtastic
 
@@ -154,6 +392,8 @@ Usage: nodes [online|limit|all]
             return "Unable to connect to Meshtastic device."
 
         online_only, limit = self._parse_options(args)
+        fields = self._configured_fields()
+        custom_fields = "fields" in self.config
         all_nodes = [
             (node_id, info)
             for node_id, info in meshtastic_client.nodes.items()
@@ -167,60 +407,37 @@ Usage: nodes [online|limit|all]
 
         node_lines: list[str] = []
         for display_index, (node_id, info) in enumerate(nodes[:limit], start=1):
-            user = info.get("user")
-            user_info = user if isinstance(user, dict) else {}
-            short_name = user_info.get("shortName") or UNKNOWN_NODE_VALUE
-            long_name = user_info.get("longName") or UNKNOWN_NODE_VALUE
-            hw_model = user_info.get("hwModel") or UNKNOWN_NODE_VALUE
-            stable_node_id = user_info.get("id") or node_id
+            if custom_fields:
+                rendered_fields = [
+                    rendered
+                    for field in fields
+                    if (rendered := self._render_field(field, node_id, info))
+                    is not None
+                ]
+                node_lines.append(
+                    (" / ".join(rendered_fields) or "No fields available") + "\n"
+                )
+                continue
 
-            hops = "? hops away"
-            hops_away = info.get("hopsAway")
-            if hops_away is not None:
-                if hops_away == 0:
-                    hops = "direct"
-                elif hops_away == 1:
-                    hops = "1 hop away"
-                else:
-                    hops = f"{hops_away} hops away"
-
-            snr = ""
-            snr_value = info.get("snr")
-            if snr_value is not None:
-                snr = f"{snr_value}{SNR_UNIT_SUFFIX}"
-
-            last_heard = "?"
-            last_heard_timestamp = info.get("lastHeard")
-            if last_heard_timestamp is not None:
-                try:
-                    parsed_last_heard = float(last_heard_timestamp)
-                    if parsed_last_heard > 0:
-                        last_heard = get_relative_time(parsed_last_heard)
-                except (TypeError, ValueError, OverflowError, OSError):
-                    logger.debug(
-                        "Failed to parse lastHeard timestamp: %s", last_heard_timestamp
-                    )
-                    last_heard = "?"
-
-            voltage = "?V"
-            battery = "?%"
-            device_metrics = info.get("deviceMetrics")
-            if isinstance(device_metrics, dict):
-                voltage_value = device_metrics.get("voltage")
-                if voltage_value is not None:
-                    voltage = f"{voltage_value}V"
-                battery_level = device_metrics.get("batteryLevel")
-                if battery_level is not None:
-                    battery = f"{battery_level}%"
-
-            node_lines.append(
-                f"{display_index}. {short_name} {long_name}\n"
+            name = self._render_field("name", node_id, info)
+            hw_model = self._render_field("hardware", node_id, info)
+            stable_node_id = _get_field_value(info, "user.id") or node_id
+            power = self._render_field("power", node_id, info)
+            hops = self._render_field("hops", node_id, info)
+            snr = self._render_field("snr", node_id, info)
+            last_heard = self._render_field("last_seen", node_id, info)
+            status = self._render_field("status", node_id, info)
+            node_text = (
+                f"{display_index}. {name}\n"
                 f"   id: {stable_node_id}\n"
                 f"   model: {hw_model}\n"
-                f"   battery: {battery} {voltage}\n"
+                f"   battery: {power}\n"
                 f"   link: {hops}, snr: {snr or '?'}\n"
                 f"   last: {last_heard}\n"
             )
+            if status:
+                node_text += f"   {status}\n"
+            node_lines.append(node_text)
 
         total_count = len(all_nodes)
         online_count = len(online_nodes)
@@ -238,6 +455,8 @@ Usage: nodes [online|limit|all]
                     f"Nodes: {total_count} / Online {online_count}, "
                     f"showing online {filtered_count}\n\n"
                 )
+            if custom_fields:
+                response = f"Nodes: {filtered_count}\n"
         return response + "".join(node_lines)
 
     async def handle_meshtastic_message(
@@ -246,16 +465,9 @@ Usage: nodes [online|limit|all]
         """
         Handle an incoming Meshtastic packet without processing it.
 
-        Parameters:
-            packet (Any): Raw Meshtastic packet data received from the mesh.
-            formatted_message (str): Human-readable representation of the packet payload.
-            longname (str): Full device name of the packet sender.
-            meshnet_name (str): Name of the mesh network that the packet originated from.
-
         Returns:
             bool: `False` indicating the plugin did not handle the message.
         """
-        # Preserve API surface; arguments are currently unused.
         _ = packet, formatted_message, longname, meshnet_name
         return False
 
@@ -265,17 +477,11 @@ Usage: nodes [online|limit|all]
         event: RoomMessageText | RoomMessageNotice | ReactionEvent | RoomMessageEmote,
         full_message: str,
     ) -> bool:
-        # Pass the event to matches()
         """
-        Handle a Matrix room event and send the nodes summary when the event matches plugin criteria.
-
-        Parameters:
-            room (MatrixRoom): The Matrix room where the event occurred; used as the destination for the response.
-            event (RoomMessageText | RoomMessageNotice | ReactionEvent | RoomMessageEmote): Incoming event evaluated to determine whether this plugin should handle it.
-            full_message (str): The raw message text; present for signature compatibility and not used by this handler.
+        Handle a Matrix room event and send the configured nodes summary.
 
         Returns:
-            bool: `True` if the event was handled and a response was sent, `False` otherwise.
+            bool: `True` if the command was handled, `False` otherwise.
         """
         if not self.matches(event):
             return False

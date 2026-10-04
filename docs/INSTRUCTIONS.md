@@ -1,10 +1,58 @@
 # MMRelay Instructions
 
-MMRelay works on Linux, macOS, and Windows and requires Python 3.11+.
+MMRelay runs on Linux, macOS, and Windows. Native installs require Python
+3.11+; Docker installs run MMRelay and the one-time Matrix login in containers.
 
-## Installation
+## Choose an installation method
 
-### Quick Install
+MMRelay runs natively via pipx or as a Docker container. Both use the same
+configuration format and authentication command (`mmrelay auth login`). Native
+Linux/macOS installs use `~/.mmrelay/` by default; Windows native installs use
+AppData. Docker mounts a host data directory at `/data`. To move between
+installations, copy the complete data directory, including `matrix/`, while
+the relay is stopped. See the [Docker Guide](DOCKER.md#data-persistence) for
+mounts and custom locations.
+
+|                   | Docker                                         | pipx (native)                          |
+| ----------------- | ---------------------------------------------- | -------------------------------------- |
+| Best for          | Always-on servers, NAS boxes, VPS hosts        | Desktops, laptops, Raspberry Pi boards |
+| Host needs        | Docker                                         | Python 3.11+                           |
+| BLE / serial node | BLE on Linux hosts only; extra compose options | Direct device access; simplest setup   |
+| Upgrades          | `docker compose pull && docker compose up -d`  | `pipx upgrade mmrelay`                 |
+
+**Rule of thumb:** headless server with a TCP-connected node → Docker.
+Node attached over USB/serial or Bluetooth → native. For Kubernetes, see the
+[Helm Guide](HELM.md) or [Kubernetes Guide](KUBERNETES.md).
+
+### Docker install (recommended for servers)
+
+```bash
+# These commands use a Unix shell and require Git and Make.
+# Clone the repository
+git clone https://github.com/jeremiah-k/meshtastic-matrix-relay.git
+cd meshtastic-matrix-relay
+
+# Copy the sample config, create .env and docker-compose.yaml,
+# then open the config in your editor
+make setup-prebuilt
+
+# Download the image and authenticate with the relay bot account
+docker compose pull mmrelay
+docker compose run --rm --no-deps mmrelay mmrelay auth login
+
+# Start the official prebuilt image
+make run
+make logs
+```
+
+Prefer not to clone the repository? The [Docker Guide](DOCKER.md) has a
+curl-only Quick Start, Portainer instructions, compose snippets for each
+connection type, and full troubleshooting. To build the image from source
+instead of pulling it, run `make setup` and choose "Build from source".
+Upgrading from an older MMRelay layout? See the
+[Migration Guide for v1.3](MIGRATION_1.3.md).
+
+### Native install (pipx)
 
 ```bash
 # Install using pipx for isolated installation
@@ -15,6 +63,11 @@ pip install mmrelay
 ```
 
 For pipx installation instructions, see: [pipx installation guide](https://pipx.pypa.io/stable/installation/#on-linux)
+
+For encrypted Matrix rooms on supported native platforms, install
+`pipx install 'mmrelay[e2e]'` instead (or `pip install 'mmrelay[e2e]'`). The sample
+configuration enables E2EE by default. See the [E2EE Guide](E2EE.md) for platform
+requirements; the Docker image already includes these dependencies.
 
 ### Developer Install
 
@@ -48,6 +101,9 @@ MMRelay looks for configuration files in the following locations (in order):
 
 ### Setting Up Your Configuration
 
+> **Docker installs:** `make setup-prebuilt` already copied the sample config
+> to `~/.mmrelay/config.yaml`. Skip `config generate` and edit that file.
+
 MMRelay includes a built-in command to generate a sample configuration file in the recommended location:
 
 ```bash
@@ -69,7 +125,11 @@ This command will:
 **Standard Method (v1.2+)**: Use the built-in authentication command:
 
 ```bash
+# Native installation
 mmrelay auth login
+
+# Docker installation (before starting the relay)
+docker compose run --rm --no-deps mmrelay mmrelay auth login
 ```
 
 This interactive command will:
@@ -167,7 +227,11 @@ mmrelay doctor
 
 ### Systemd Service (Linux)
 
-For automatic startup and management on Linux systems, MMRelay includes a built-in command to set up a systemd user service:
+For automatic startup and management on Linux systems (native installs),
+MMRelay includes a built-in command to set up a systemd user service:
+
+Docker deployments don't need this — the container restarts automatically
+through the compose `restart: unless-stopped` policy.
 
 ```bash
 mmrelay service install
@@ -207,28 +271,6 @@ journalctl --user -u mmrelay.service
 # Or watch the application log file in real-time
 tail -f ~/.mmrelay/logs/mmrelay.log
 ```
-
-## Docker
-
-MMRelay includes official Docker support for easy deployment and management. Docker provides isolated environment, automatic dependency management, easy updates, and consistent deployment across different systems.
-
-### Quick Docker Setup
-
-```bash
-# Clone the repository (if you haven't already)
-git clone https://github.com/jeremiah-k/meshtastic-matrix-relay.git
-cd meshtastic-matrix-relay
-
-# Set up configuration and start
-make setup    # Copy config and open editor (first time)
-make build    # Build the Docker image
-make run      # Start the container
-make logs     # View logs
-```
-
-For detailed Docker commands, configuration options, connection types, and troubleshooting, see the [Docker Guide](DOCKER.md).
-
-If you are upgrading from an older MMRelay layout, see the [Migration Guide for v1.3](MIGRATION_1.3.md).
 
 ## Kubernetes
 
