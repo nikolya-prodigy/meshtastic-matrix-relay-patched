@@ -1385,6 +1385,12 @@ def run_main(args: Any) -> int:
             logger.error(f"  • {msg_suggest_check_config()}")
         else:
             logger.error(f"Configuration is missing required keys: {missing_keys}")
+            if "matrix" in missing_keys:
+                logger.error(
+                    "No Matrix credentials were found. Run 'mmrelay auth login' to "
+                    "create a session, or add a 'matrix' section with authentication "
+                    "settings to the configuration."
+                )
             logger.error("Next steps:")
             logger.error(
                 f"  • Create a valid config.yaml file or {msg_suggest_generate_config()}"

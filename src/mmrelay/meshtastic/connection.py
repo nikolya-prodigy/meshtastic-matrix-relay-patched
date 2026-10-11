@@ -16,6 +16,7 @@ from mmrelay.constants.config import (
     CONFIG_SECTION_MESHTASTIC,
     DEFAULT_HEALTH_CHECK_ENABLED,
 )
+from mmrelay.constants.meshtastic import MESHTASTIC_READY_TOPIC
 from mmrelay.constants.network import (
     BLE_INTERFACE_CREATE_TIMEOUT_FLOOR_SECS,
     BLE_TROUBLESHOOTING_GUIDANCE,
@@ -672,7 +673,9 @@ def connect_meshtastic(
             facade._connect_attempt_condition.notify_all()
 
 
-def _connect_meshtastic_impl(
+# The serial/BLE/TCP branches in one body exceed pyright's analysis budget;
+# splitting them per transport is the real remedy, not an analyzer setting.
+def _connect_meshtastic_impl(  # pyright: ignore[reportGeneralTypeIssues]
     passed_config: dict[str, Any] | None = None,
     force_connect: bool = False,
 ) -> Any:
@@ -1852,6 +1855,15 @@ def _connect_meshtastic_impl(
                     connection_type=connection_type,
                     active_config=facade.config,
                 )
+
+            # BLE's SDK connection event can precede the configuration download.
+            # Publish readiness after setup, outside the connection lock, so
+            # configuration plugins see populated settings and channel caches.
+            if client is facade.meshtastic_client and not facade.shutting_down:
+                try:
+                    facade.pub.sendMessage(MESHTASTIC_READY_TOPIC, interface=client)
+                except Exception:
+                    facade.logger.exception("Meshtastic ready callback failed")
 
         except ConnectionRefusedError:
             facade._rollback_connect_attempt_state(

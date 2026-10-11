@@ -15,11 +15,17 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        os: [ubuntu-24.04]
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.15"]
+        include:
+          # Canary for the ubuntu-latest rollover to 26.04: exercise the
+          # GA image continuously so the eventual pin flip is evidence-based.
+          - os: ubuntu-26.04
+            python-version: "3.14"
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,7 +51,40 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e '.[test,e2e]'
 
+      - name: Verify Matrix provider selection and dependency consistency
+        run: |
+          python -m pip check
+          python - <<'PY'
+          import tomllib
+          from importlib.metadata import version
+          from packaging.requirements import Requirement
+
+          project = tomllib.load(open("pyproject.toml", "rb"))["project"]
+          entries = list(project["dependencies"])
+          entries += project["optional-dependencies"]["e2e"]
+          selected = {
+              str(req.specifier)
+              for raw in entries
+              for req in [Requirement(raw)]
+              if req.name == "mindroom-nio"
+              and (req.marker is None or req.marker.evaluate())
+          }
+          assert len(selected) == 1, f"conflicting mindroom-nio pins apply: {selected}"
+          expected = selected.pop().lstrip("=<>!~ ")
+          actual = version("mindroom-nio")
+          assert actual == expected, (actual, expected)
+          print(f"mindroom-nio {actual}")
+          PY
+
+      - name: Prepare previous Matrix provider for store upgrade contract
+        if: matrix.python-version == '3.12'
+        run: |
+          python -m venv .sdk-previous
+          .sdk-previous/bin/python -m pip install 'mindroom-nio[e2e]==0.40.0'
+
       - name: Run tests with coverage
+        env:
+          MMRELAY_PREVIOUS_SDK_PYTHON: ${{ matrix.python-version == '3.12' && '.sdk-previous/bin/python' || '' }}
         run: |
           # Run full suite (including performance tests) now that they are fast and deterministic
           python -m pytest tests/ -v --cov --cov-report=xml --cov-report=html --junitxml=junit.xml

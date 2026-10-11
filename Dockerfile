@@ -1,5 +1,5 @@
 # Build stage
-FROM python:3.14-slim-bookworm@sha256:c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88 AS builder
+FROM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83 AS builder
 
 # Install build dependencies with pinned versions
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -22,7 +22,7 @@ RUN python -m pip install --no-cache-dir --timeout=300 --retries=3 \
     --prefix=/install ".[e2e]"
 
 # Runtime stage
-FROM python:3.14-slim-bookworm@sha256:c8137f4c460908c8763f281c8f22c431eb5c538514ba9553fc3a89c06b7cfb88
+FROM python:3.14-slim-bookworm@sha256:48b13b003dda20b16f9442b8475aa05fe21bf6579a8c881db92ffb4d8fd20f83
 
 # Create non-root user for security
 RUN groupadd --gid 1000 mmrelay && \
@@ -69,13 +69,13 @@ ENV MMRELAY_HOME=/data
 ENV MMRELAY_READY_FILE=/tmp/mmrelay-ready
 
 # Switch to non-root user
-USER mmrelay
+USER 1000:1000
 
 # Health check - verifies ready-file freshness.
 # The ready file is created when the app is running and healthy.
 # Users who don't want ready-file health checks should omit HEALTHCHECK entirely.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD find "$MMRELAY_READY_FILE" -mmin -2 | grep -q .
+    CMD ["/bin/sh", "-c", "find \"$MMRELAY_READY_FILE\" -mmin -2 | grep -q ."]
 
 # Default command
 # MMRELAY_HOME is set via ENV, so runtime paths resolve under /data by default.

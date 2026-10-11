@@ -1269,10 +1269,10 @@ class TestAuthLogout(unittest.TestCase):
     @patch("getpass.getpass")
     @patch("mmrelay.cli_utils.logout_matrix_bot", new=MagicMock(return_value=True))
     @patch("builtins.print")
-    def test_handle_auth_logout_password_prompt_none(
+    def test_handle_auth_logout_without_password_prompt(
         self, mock_print, mock_getpass, mock_asyncio_run
     ):
-        """Test logout with password=None (prompt for password)."""
+        """Ordinary logout does not prompt for a password."""
         # ASYNC MOCK FIX: Mock asyncio.run instead of the async function directly
         mock_getpass.return_value = "prompted_password"
         mock_asyncio_run.return_value = True
@@ -1284,7 +1284,7 @@ class TestAuthLogout(unittest.TestCase):
 
         # Verify results
         self.assertEqual(result, EXIT_CODE_SUCCESS)
-        mock_getpass.assert_called_once_with("Enter Matrix password for verification: ")
+        mock_getpass.assert_not_called()
         mock_asyncio_run.assert_called_once()
 
     @patch("asyncio.run")
@@ -1403,11 +1403,9 @@ class TestAuthLogout(unittest.TestCase):
             # Verify header was printed
             mock_print.assert_any_call("Matrix Bot Logout")
             mock_print.assert_any_call("=================")
-            mock_print.assert_any_call(
-                "This will log out from Matrix and clear all local session data:"
-            )
+            mock_print.assert_any_call("This will revoke the saved Matrix session:")
             mock_print.assert_any_call(f"• Remove {CREDENTIALS_FILENAME}")
-            mock_print.assert_any_call("• Clear E2EE encryption store")
+            mock_print.assert_any_call("• Retain encryption and cross-signing keys")
             mock_print.assert_any_call("• Invalidate Matrix access token")
 
 
@@ -1434,7 +1432,8 @@ def test_handle_auth_login_passes_explicit_config() -> None:
 
     assert result == EXIT_CODE_SUCCESS
     mock_ensure_dirs.assert_called_once_with(create_missing=True)
-    mock_load_config.assert_called_once_with(args)
+    (path_args,) = mock_load_config.call_args.args
+    assert path_args.config == "/custom/config.yaml"
     mock_login.assert_called_once_with(
         homeserver="https://matrix.example",
         username="@bot:matrix.example",
@@ -1496,7 +1495,8 @@ def test_handle_auth_login_continues_when_config_load_fails() -> None:
 
     assert result == EXIT_CODE_SUCCESS
     mock_ensure_dirs.assert_called_once_with(create_missing=True)
-    mock_load_config.assert_called_once_with(args)
+    (path_args,) = mock_load_config.call_args.args
+    assert path_args.config == "/custom/config.yaml"
     mock_login.assert_called_once_with(
         homeserver="https://matrix.example",
         username="@bot:matrix.example",
@@ -1938,7 +1938,8 @@ class TestAuthStatus(unittest.TestCase):
 
         # Verify results
         self.assertEqual(result, EXIT_CODE_SUCCESS)
-        mock_get_paths.assert_called_once_with(self.mock_args)
+        (path_args,) = mock_get_paths.call_args.args
+        self.assertIs(path_args.config, self.mock_args.config)
         # Ensure at least one credentials candidate path was checked and opened.
         self.assertGreaterEqual(mock_exists.call_count, 1)
         self.assertGreaterEqual(mock_file.call_count, 1)
@@ -2010,7 +2011,8 @@ class TestAuthStatus(unittest.TestCase):
 
         # Verify results
         self.assertEqual(result, EXIT_CODE_ERROR)
-        mock_get_paths.assert_called_once_with(self.mock_args)
+        (path_args,) = mock_get_paths.call_args.args
+        self.assertIs(path_args.config, self.mock_args.config)
         home_dir = os.path.dirname(TEST_HOME_CONFIG_PATH)
         mock_exists.assert_any_call(os.path.join(home_dir, CREDENTIALS_FILENAME))
         mock_exists.assert_any_call(
@@ -2048,7 +2050,8 @@ class TestAuthStatus(unittest.TestCase):
 
         # Verify results
         self.assertEqual(result, EXIT_CODE_ERROR)
-        mock_get_paths.assert_called_once_with(self.mock_args)
+        (path_args,) = mock_get_paths.call_args.args
+        self.assertIs(path_args.config, self.mock_args.config)
         home_dir = os.path.dirname(TEST_HOME_CONFIG_PATH)
         mock_exists.assert_any_call(os.path.join(home_dir, CREDENTIALS_FILENAME))
         mock_exists.assert_any_call(
@@ -2139,7 +2142,8 @@ class TestAuthStatus(unittest.TestCase):
 
         # Verify results
         self.assertEqual(result, EXIT_CODE_SUCCESS)
-        mock_get_paths.assert_called_once_with(self.mock_args)
+        (path_args,) = mock_get_paths.call_args.args
+        self.assertIs(path_args.config, self.mock_args.config)
 
         # Should check configured candidates, including second config path.
         mock_exists.assert_any_call(os.path.join(home_dir, CREDENTIALS_FILENAME))

@@ -19,7 +19,9 @@ operator guidance**. Broader conceptual and community documentation lives in the
 ## Configure and operate
 
 - **[E2EE Guide](E2EE.md)** — encrypted rooms, device identity, and cross-signing recovery
+- **[Native Matrix OAuth (experimental)](MATRIX_OAUTH.md)** — dedicated device sessions, browser approval, token renewal, and draft limitations
 - **[Advanced Configuration](ADVANCED_CONFIGURATION.md)** — message formatting, packet routing, health checks, debug logging, and environment overrides
+- **[Mesh Beacons](MESH_BEACON.md)** — capture invitations, recall join URLs, and render QR codes
 
 ## Upgrade and release notes
 
@@ -47,6 +49,7 @@ container mounts are used. The deployment guides document those cases.
 - **[Windows Installer Build Guide](dev/INNO_SETUP_GUIDE.md)** — installer maintenance
 - **[BLE Compatibility Notes](dev/BLE_DUAL_LIBRARY_COMPATIBILITY.md)** — BLE library compatibility design
 - **[Matrix Compatibility Plan](dev/MATRIX_DUAL_LIBRARY_COMPATIBILITY_PLAN.md)** — Matrix-provider compatibility design
+- **[mindroom-nio 1.x compatibility draft](dev/MINDROOM_NIO_UPGRADE.md)** — Python-specific SDK selection, ordinary-client contracts, and live-validation requirements
 - **[Archived implementation notes](dev/archive/)** — historical design and migration material
 
 ## Getting help

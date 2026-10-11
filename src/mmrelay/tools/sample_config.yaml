@@ -116,7 +116,7 @@ meshtastic:
   meshnet_name: Your Meshnet Name # This is displayed in full on Matrix, but is truncated when sent to a Meshnet
   message_interactions: # Configure reactions and replies (both require message storage in database)
     reactions: false # Enable reaction relaying between platforms
-    replies: false   # Enable reply relaying between platforms
+    replies: false # Enable reply relaying between platforms
 
   # Optional connection health monitoring overrides
   #health_check:
@@ -217,13 +217,36 @@ plugins:
     #max_display: 30 # Default number of nodes shown by `nodes`; use `nodes all` or `nodes online all` to show all
     # Output is newest-node-first. Setting fields selects a compact one-line view.
     # Status messages from Firmware 2.8 appear when mtjk has received one.
+    #max_results: 20 # Limit for advanced !nodes queries; 0 lists every node
     #fields: ["name", "hardware", "power", "snr", "hops", "last_seen", "status"]
-    # Other aliases: short_name, long_name, node_id, node_num, role, public_key,
-    # battery, voltage, channel_utilization, air_util_tx, uptime, channel, favorite,
-    # latitude, longitude, altitude. Any raw dotted node path is also accepted, for
-    # example environmentMetrics.temperature or hostMetrics.freeMemory.
+    # Other aliases: short_name, long_name, node_id, node_num, role,
+    # public_key, battery, voltage, channel_utilization, air_util_tx, uptime,
+    # channel, favorite, latitude, longitude, altitude. Any raw dotted node path is
+    # also accepted, for example environmentMetrics.temperature or
+    # hostMetrics.freeMemory.
     # Potentially secret-bearing paths (private keys, PSKs, passwords, wifi or
     # bluetooth pairing settings, ...) are always withheld, even when configured.
+    # The !nodes command also takes arguments (see !nodes help):
+    #   !nodes limit 50           or a bare number: !nodes 50; 'limit all' uncaps
+    #   !nodes role client_mute   case-insensitive substring filter; commas = any-of
+    #   !nodes hardware rak4631   multiple filters combine with AND
+    #   !nodes sort snr desc      numeric fields default high-to-low, text A-to-Z
+    #   !nodes fields battery,uptime  output fields for this listing only
+  mesh_beacon:
+    active: false
+    # Listening-first Mesh Beacon support. When active, MMRelay verifies the
+    # connected radio exposes Mesh Beacon and enables only its firmware listen
+    # flag. Broadcast message/targets/offers remain owned by official clients
+    # and remote-admin tooling; MMRelay preserves those settings unchanged.
+    #announce: true # Post each new/changed invitation to Matrix (default: true)
+    #announce_repeats: false # Post every periodic repeat instead of deduplicating
+    #relay_channel: 0 # Optional Matrix routing key; omit to use receive channel
+    #qr_label: true # Caption QR images with the advertised channel, preset, and slot (default: true)
+    # !beacons show ID includes the public invitation PSK. !beacons dismiss ID
+    # and !beacons clear require Matrix room moderation/redaction permission and
+    # hide invitations only from that room.
+    # Commands: !beacons, !beacons show ID, !beacons url ID, !beacons qr ID,
+    # !beacons dismiss ID, !beacons clear
 
 #community-plugins:
 #  sample_plugin:
