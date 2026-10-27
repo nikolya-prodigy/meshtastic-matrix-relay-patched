@@ -24,6 +24,11 @@ at the network layer instead.
 
 ## Create a session
 
+Windows supports native OAuth for unencrypted Matrix rooms; its E2EE limitation
+does not prevent OAuth login. Installer users can open **MM Relay OAuth Login**
+from the Start menu, or run `.\mmrelay.exe auth login --oauth` in PowerShell from
+the installation directory. See the [Windows guide](WINDOWS.md#matrix-authentication).
+
 Stop the relay before changing its authentication. Existing credentials are not
 overwritten; in-place conversion from a password session is not implemented.
 Use the same MMRelay home and configuration as the relay process:
@@ -61,6 +66,13 @@ Approving a code from an exited process cannot create the local credentials file
 For Docker, run the command through the deployment's existing interactive
 `docker compose run --rm mmrelay ...` workflow, using the same persistent home
 mount and service account. Do not create a separate disposable credentials volume.
+
+Private certificate authorities can be selected with `SSL_CERT_FILE` or
+`SSL_CERT_DIR`. OAuth and Matrix SDK requests use the same explicit trust
+settings, including device signing and relay startup. Invalid explicit trust
+fails rather than silently switching back to certifi's bundle. Container users
+can mount the CA bundle read-only and set these variables in the container;
+changing the host trust store is unnecessary.
 
 The session receives a distinct device ID. MMRelay verifies the account and device
 through whoami before saving credentials. When E2EE is configured, login initializes

@@ -326,6 +326,37 @@ async def test_ensure_dm_room_creates_room_mapping(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("create", [False, True])
+async def test_ensure_dm_room_reuses_legacy_decimal_destination(
+    monkeypatch, create
+) -> None:
+    client = FakeClient()
+    config = {
+        "matrix_rooms": [
+            {
+                "id": "!existing:example.org",
+                "meshtastic_channel": 0,
+                "meshtastic_portal_type": "dm",
+                "meshtastic_destination": "123",
+            }
+        ],
+        "meshtastic_portals": {"enabled": True},
+    }
+    interface = SimpleNamespace(
+        nodes={"!0000007b": {"user": {"shortName": "NOD", "longName": "Node"}}}
+    )
+    monkeypatch.setattr(facade, "config", config)
+    monkeypatch.setattr(facade, "join_matrix_room", AsyncMock())
+
+    room_id = await ensure_dm_room(client, interface, "!0000007b", create=create)
+
+    assert room_id == "!existing:example.org"
+    assert client.created == []
+    assert len(config["matrix_rooms"]) == 1
+    assert config["matrix_rooms"][0]["meshtastic_node_name"] == "NOD"
+
+
+@pytest.mark.asyncio
 async def test_ensure_dm_room_requires_loaded_config(monkeypatch) -> None:
     client = FakeClient()
     monkeypatch.setattr(facade, "config", None)

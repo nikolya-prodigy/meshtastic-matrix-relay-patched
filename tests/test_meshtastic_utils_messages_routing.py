@@ -65,16 +65,20 @@ def _base_packet():
     """
     Create a representative Meshtastic packet dictionary used by tests.
 
+    ``fromId`` carries the library's `!hex` node-id string. The Meshtastic
+    interface keys ``interface.nodes`` by that same string, so fixtures using
+    an integer here would not match how a real packet looks up NodeDB entries.
+
     Returns:
         dict: A packet containing:
-            - fromId: sender node id (123)
+            - fromId: sender node id (!0000007b)
             - to: recipient id (BROADCAST_NUM)
             - decoded: payload with `text` ("Hello") and `portnum` (TEXT_MESSAGE_APP)
             - channel: channel index (0)
             - id: message id (999)
     """
     return {
-        "fromId": 123,
+        "fromId": "!0000007b",
         "to": BROADCAST_NUM,
         "decoded": {"text": "Hello", "portnum": TEXT_MESSAGE_APP},
         "channel": 0,
@@ -378,7 +382,6 @@ def test_on_meshtastic_message_does_not_filter_plain_emoji_message_when_reaction
     mock_relay.assert_awaited_once()
 
 
-
 def test_on_meshtastic_message_reaction_missing_original():
     """Test that reactions with missing originals are relayed as normal messages."""
     config = _base_config()
@@ -422,7 +425,6 @@ def test_on_meshtastic_message_reply_missing_original():
     )
     assert mock_relay is not None
     mock_relay.assert_awaited_once()
-
 
 
 def test_on_meshtastic_message_channel_fallback_numeric_portnum():
@@ -625,12 +627,11 @@ def test_on_meshtastic_message_refreshes_existing_dm_room_metadata():
         on_meshtastic_message(packet, _make_interface())
 
     ensure_dm_room.assert_called_once()
-    assert ensure_dm_room.call_args.args[2] == 123
+    assert ensure_dm_room.call_args.args[2] == "!0000007b"
     assert ensure_dm_room.call_args.kwargs["channel"] == 0
     assert ensure_dm_room.call_args.kwargs["create"] is False
     assert mock_relay is not None
     mock_relay.assert_awaited_once()
-
 
 
 @pytest.mark.usefixtures("reset_meshtastic_globals")
@@ -739,14 +740,16 @@ def test_on_meshtastic_message_detection_sensor_enabled_relays():
     mock_relay.assert_awaited_once()
 
 
-
-def test_on_meshtastic_message_saves_node_names_from_interface():
+@pytest.mark.parametrize("node_key", ["!0000007b", 123])
+def test_on_meshtastic_message_saves_node_names_from_interface(node_key):
     config = _base_config()
     _set_globals(config)
     packet = _base_packet()
+    packet["fromId"] = None
+    packet["from"] = 123
 
     nodes = {
-        123: {
+        node_key: {
             "user": {"longName": "Mesh Long", "shortName": "ML"},
         }
     }
@@ -762,8 +765,8 @@ def test_on_meshtastic_message_saves_node_names_from_interface():
     ):
         on_meshtastic_message(packet, _make_interface(nodes=nodes))
 
-    mock_save_long.assert_called_once_with(123, "Mesh Long")
-    mock_save_short.assert_called_once_with(123, "ML")
+    mock_save_long.assert_called_once_with("!0000007b", "Mesh Long")
+    mock_save_short.assert_called_once_with("!0000007b", "ML")
 
 
 def test_on_meshtastic_message_falls_back_to_sender_id():
@@ -785,15 +788,17 @@ def test_on_meshtastic_message_falls_back_to_sender_id():
     ):
         on_meshtastic_message(packet, _make_interface(nodes={}))
 
-    mock_prefix.assert_called_once_with(config, "123", "123", "TestNet")
-    mock_logger.debug.assert_any_call("Node info for sender 123 not available yet.")
+    mock_prefix.assert_called_once_with(config, "!0000007b", "!0000007b", "TestNet")
+    mock_logger.debug.assert_any_call(
+        "Node info for sender !0000007b not available yet."
+    )
 
 
 def test_on_meshtastic_message_node_without_user_keeps_sender_fallback():
     config = _base_config()
     _set_globals(config)
     packet = _base_packet()
-    nodes = {123: {"snr": 6.5, "lastHeard": 1234567890}}
+    nodes = {"!0000007b": {"snr": 6.5, "lastHeard": 1234567890}}
 
     with (
         _patch_message_deps(
@@ -807,7 +812,7 @@ def test_on_meshtastic_message_node_without_user_keeps_sender_fallback():
     ):
         on_meshtastic_message(packet, _make_interface(nodes=nodes))
 
-    mock_prefix.assert_called_once_with(config, "123", "123", "TestNet")
+    mock_prefix.assert_called_once_with(config, "!0000007b", "!0000007b", "TestNet")
     mock_save_long.assert_not_called()
     mock_save_short.assert_not_called()
 
@@ -816,7 +821,7 @@ def test_on_meshtastic_message_interface_supplies_only_missing_shortname():
     config = _base_config()
     _set_globals(config)
     packet = _base_packet()
-    nodes = {123: {"user": {"shortName": "ML"}}}
+    nodes = {"!0000007b": {"user": {"shortName": "ML"}}}
 
     with (
         _patch_message_deps(
@@ -832,14 +837,14 @@ def test_on_meshtastic_message_interface_supplies_only_missing_shortname():
 
     mock_prefix.assert_called_once_with(config, "Mesh Long", "ML", "TestNet")
     mock_save_long.assert_not_called()
-    mock_save_short.assert_called_once_with(123, "ML")
+    mock_save_short.assert_called_once_with("!0000007b", "ML")
 
 
 def test_on_meshtastic_message_interface_supplies_only_missing_longname():
     config = _base_config()
     _set_globals(config)
     packet = _base_packet()
-    nodes = {123: {"user": {"longName": "Mesh Long"}}}
+    nodes = {"!0000007b": {"user": {"longName": "Mesh Long"}}}
 
     with (
         _patch_message_deps(
@@ -854,7 +859,7 @@ def test_on_meshtastic_message_interface_supplies_only_missing_longname():
         on_meshtastic_message(packet, _make_interface(nodes=nodes))
 
     mock_prefix.assert_called_once_with(config, "Mesh Long", "ML", "TestNet")
-    mock_save_long.assert_called_once_with(123, "Mesh Long")
+    mock_save_long.assert_called_once_with("!0000007b", "Mesh Long")
     mock_save_short.assert_not_called()
 
 
@@ -938,7 +943,6 @@ def test_on_meshtastic_message_skips_non_dict_rooms():
     mock_relay.assert_awaited_once()
 
 
-
 def test_on_meshtastic_message_non_text_plugin_returns_none():
     config = _base_config()
     _set_globals(config)
@@ -1001,7 +1005,6 @@ def test_on_meshtastic_message_chat_portnums_override_promotes_range_test():
     mock_relay.assert_awaited_once()
 
 
-
 def test_on_meshtastic_message_chat_portnums_override_promotes_via_numeric_config():
     RANGE_TEST_NUM = 70
     config = _base_config_with_routing(chat_portnums=[RANGE_TEST_NUM])
@@ -1025,7 +1028,6 @@ def test_on_meshtastic_message_chat_portnums_override_promotes_via_numeric_confi
     mock_relay.assert_awaited_once()
 
 
-
 def test_on_meshtastic_message_chat_portnums_string_value():
     config = _base_config_with_routing(chat_portnums="RANGE_TEST_APP")
     _set_globals(config)
@@ -1040,7 +1042,6 @@ def test_on_meshtastic_message_chat_portnums_string_value():
 
     assert mock_relay is not None
     mock_relay.assert_awaited_once()
-
 
 
 def test_on_meshtastic_message_disabled_portnums_drops_packet():
@@ -1077,7 +1078,6 @@ def test_on_meshtastic_message_disabled_portnums_does_not_affect_text_message():
 
     assert mock_relay is not None
     mock_relay.assert_awaited_once()
-
 
 
 def test_on_meshtastic_message_disabled_portnums_takes_precedence_over_chat():
@@ -1399,7 +1399,6 @@ def test_on_meshtastic_message_text_app_malformed_channel_defaults_to_zero():
 
     assert mock_relay is not None
     mock_relay.assert_awaited_once()
-
 
 
 def test_on_meshtastic_message_promoted_non_chat_malformed_channel_skips_relay():

@@ -589,6 +589,11 @@ def _node_id_candidates(node_key: str) -> list[str]:
     candidates = [node_key]
     if node_key.startswith("!"):
         candidates.append(node_key[1:])
+        if len(node_key) == 9:
+            try:
+                candidates.append(str(int(node_key[1:], 16)))
+            except ValueError:
+                pass
     else:
         candidates.append(f"!{node_key}")
     return candidates
@@ -753,7 +758,7 @@ def _upsert_dm_room_mapping(
             room["meshtastic_node_name"] = display_name
             room.setdefault("meshtastic_channel", channel)
             return updated
-        if str(room.get("meshtastic_destination")) == node_key:
+        if str(room.get("meshtastic_destination")) in _node_id_candidates(node_key):
             destination_match = room
 
     if destination_match is not None:
@@ -994,10 +999,9 @@ async def ensure_dm_room(
     else:
         return None
     for room in matrix_rooms:
-        if (
-            isinstance(room, dict)
-            and str(room.get("meshtastic_destination")) == node_key
-        ):
+        if isinstance(room, dict) and str(
+            room.get("meshtastic_destination")
+        ) in _node_id_candidates(node_key):
             room_id = room.get("id")
             if isinstance(room_id, str):
                 room["meshtastic_node_name"] = display_name

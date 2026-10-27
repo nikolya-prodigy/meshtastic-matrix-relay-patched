@@ -56,10 +56,7 @@ from mmrelay.constants.network import (
     NODEDB_SHUTDOWN_TIMEOUT_SECS,
 )
 from mmrelay.constants.queue import DEFAULT_MESSAGE_DELAY
-from mmrelay.db_utils import (
-    initialize_database,
-    wipe_message_map,
-)
+from mmrelay.db_utils import initialize_database, wipe_message_map
 from mmrelay.log_utils import get_logger
 from mmrelay.matrix.alerts import alerts_enabled, run_alert_monitor
 from mmrelay.matrix_utils import InviteMemberEvent  # type: ignore[attr-defined]
@@ -82,7 +79,11 @@ from mmrelay.message_queue import (
     stop_message_queue,
 )
 from mmrelay.paths import get_home_dir, get_legacy_dirs, get_legacy_env_vars
-from mmrelay.plugin_loader import load_plugins, shutdown_plugins
+from mmrelay.plugin_loader import (
+    get_declared_unmapped_room_ids,
+    load_plugins,
+    shutdown_plugins,
+)
 
 # Import as modules to set/read shared runtime state.
 from mmrelay import matrix_utils, meshtastic_utils  # isort: skip
@@ -498,6 +499,9 @@ async def main(config: dict[str, Any]) -> None:
         Set the Meshtastic shutdown flag and signal the shutdown event so tasks waiting for shutdown can proceed.
         """
         meshtastic_utils.shutting_down = True
+        from mmrelay.meshtastic.cancellation import cancel_pending_connections
+
+        cancel_pending_connections()
         shutdown_event.set()
 
     def shutdown() -> None:
@@ -773,8 +777,26 @@ async def main(config: dict[str, Any]) -> None:
             matrix_rooms = config["matrix_rooms"]
 
         # Join the rooms specified in the config.yaml
+        mapped_room_ids: set[str] = set()
         for room in matrix_rooms:
-            await join_matrix_room(matrix_client, room["id"])
+            room_id = room["id"]
+            await join_matrix_room(matrix_client, room_id)
+            mapped_room_ids.add(room_id)
+
+        # Plugin-owned rooms join proactively too: a pending invite arrives
+        # in the initial sync before invite callbacks are registered. Mapped
+        # rooms were already joined and dispatch to mapped handlers first.
+        plugin_room_ids = await loop.run_in_executor(
+            None, get_declared_unmapped_room_ids
+        )
+        for room_id in plugin_room_ids:
+            if room_id not in mapped_room_ids:
+                try:
+                    await join_matrix_room(matrix_client, room_id)
+                except Exception:  # noqa: BLE001 - isolate optional plugin rooms
+                    matrix_logger.exception(
+                        "Failed to join plugin-owned room %s", room_id
+                    )
 
         # Register the message callback for Matrix
         matrix_logger.info("Listening for inbound Matrix messages")
@@ -1336,7 +1358,26 @@ def run_main(args: Any) -> int:
         config_rich_logger.info(f"Log file location: {log_file_path}")
 
     legacy_envs = get_legacy_env_vars()
-    legacy_dirs = get_legacy_dirs()
+    legacy_dirs = get_legacy_dirs(with_data_only=True)
+    if sys.platform == WINDOWS_PLATFORM:
+        from mmrelay.migrate import plan_windows_home_migration
+
+        try:
+            migration_plan = plan_windows_home_migration()
+        except OSError:
+            migration_plan = {"needed": False}
+            config_rich_logger.debug(
+                "Could not inspect optional Windows home migration"
+            )
+        if migration_plan["needed"]:
+            config_rich_logger.warning(
+                "Windows data home %s can be relocated to %s. Stop MMRelay and open "
+                "'MM Relay Migrate Data' from the Start menu, or run "
+                "'mmrelay migrate --to-default-home --dry-run' to review the move. "
+                "No data is moved automatically.",
+                migration_plan["source_home"],
+                migration_plan["target_home"],
+            )
     if legacy_envs or legacy_dirs:
         config_rich_logger.warning(
             "Legacy data layout detected (MMRELAY_HOME=%s, legacy_env_vars=%s, legacy_dirs=%s). "
@@ -1350,7 +1391,7 @@ def run_main(args: Any) -> int:
         )
         config_rich_logger.warning(
             "Run 'mmrelay migrate --dry-run' and 'mmrelay migrate' before upgrading "
-            "past the %s release series. See docs/DOCKER.md: Migrating to the New Layout.",
+            "past the %s release series. See docs/MIGRATION_1.3.md (Windows-Specific Notes for Windows).",
             LEGACY_LAYOUT_FINAL_MIGRATION_SERIES,
         )
 
@@ -1403,6 +1444,9 @@ def run_main(args: Any) -> int:
         return 0
     except KeyboardInterrupt:
         meshtastic_utils.shutting_down = True
+        from mmrelay.meshtastic.cancellation import cancel_pending_connections
+
+        cancel_pending_connections()
         logger.info("Interrupted by user. Exiting.")
         return 0
     except Exception:  # noqa: BLE001 — top-level guard to log and exit cleanly
